@@ -1,0 +1,356 @@
+{
+  "name": "My Custom Level",
+  "description": "",
+  "version": 1.71,
+  "scrollSpeed": 2.4,
+  "gravity": 0.4,
+  "antigravity": false,
+  "yTrack": false,
+  "gradientTopColor": "#009dff",
+  "gradientBottomColor": "#c2ccff",
+  "disableBackgroundMusic": false,
+  "midiConfig": {
+    "restartOnDeath": false,
+    "volume": 100
+  },
+  "birdStartX": 100,
+  "birdStartY": 300,
+  "pipes": [],
+  "bullets": [
+    {
+      "x": 213,
+      "y": 212,
+      "a": 3.142
+    }
+  ],
+  "bulletTriggers": [
+    {
+      "x": 214,
+      "y": 285,
+      "speed": 4,
+      "angle": 3.142,
+      "scale": 1,
+      "layer": 1,
+      "triggerAxis": "x"
+    }
+  ],
+  "layers": {
+    "currentLayer": 1,
+    "maxLayers": 3
+  },
+  "genericObjects": [
+    {
+      "type": "thwompPipe",
+      "x": 309,
+      "y": 389,
+      "uS": 67,
+      "dS": 97,
+      "mR": 75,
+      "direction": "up",
+      "st": "moving_up"
+    },
+    {
+      "type": "speedTrigger",
+      "x": 381.754,
+      "y": 292.679,
+      "targetScrollSpeed": 2.4,
+      "tA": "x",
+      "z": 60,
+      "isTriggered": false
+    },
+    {
+      "type": "gradientTrigger",
+      "x": 384,
+      "y": 209,
+      "targetTopColor": "#536497",
+      "targetBottomColor": "#2e9ed6",
+      "fadeDuration": 1,
+      "tA": "x",
+      "z": 60,
+      "isTriggered": false
+    },
+    {
+      "type": "objectSpawnTrigger",
+      "x": 383,
+      "y": 136,
+      "z": 60,
+      "oT": "bounceBlock",
+      "spawnSpeed": 4,
+      "isTriggered": false,
+      "tA": "x"
+    },
+    {
+      "type": "thwomp",
+      "x": 506,
+      "y": 168,
+      "mR": 75,
+      "direction": "up",
+      "st": "moving_up"
+    },
+    {
+      "type": "PipeTip",
+      "x": 554,
+      "y": 310
+    },
+    {
+      "type": "Spikes",
+      "x": 606,
+      "y": 258
+    },
+    {
+      "type": "PipeBody",
+      "x": 673.124,
+      "y": 225.021
+    },
+    {
+      "type": "bounceBlock",
+      "x": 731.731,
+      "y": 305.777
+    },
+    {
+      "type": "bounceBlockA",
+      "x": 826.391,
+      "y": 306.667
+    },
+    {
+      "type": "bounceBlockB",
+      "x": 909.406,
+      "y": 309.632
+    },
+    {
+      "type": "bounceBlockD",
+      "x": 1002,
+      "y": 309
+    },
+    {
+      "type": "musicBlock",
+      "x": 1105,
+      "y": 305,
+      "musicalNote": "C4",
+      "instrumentType": "sine"
+    },
+    {
+      "type": "animatedBounceBlock",
+      "x": 750,
+      "y": 173
+    },
+    {
+      "type": "tinyMushroom",
+      "x": 848.762,
+      "y": 157.578,
+      "sF": 0.5
+    },
+    {
+      "type": "bigMushroom",
+      "x": 847,
+      "y": 219,
+      "gF": 2
+    },
+    {
+      "type": "ghostEgg",
+      "x": 853,
+      "y": 109
+    },
+    {
+      "type": "invincibilityStar",
+      "x": 855,
+      "y": 56,
+      "invincibilityDuration": 5
+    },
+    {
+      "type": "heavyWeight",
+      "x": 861,
+      "y": 10
+    },
+    {
+      "type": "lightWeight",
+      "x": 905.694,
+      "y": 153.352
+    },
+    {
+      "type": "speedRing",
+      "x": 908,
+      "y": 216,
+      "sB": 5,
+      "sbD": 0.3
+    },
+    {
+      "type": "groundJuice",
+      "x": 905,
+      "y": 101,
+      "duration": 30,
+      "jumpForce": -8
+    },
+    {
+      "type": "glueBlock",
+      "x": 914,
+      "y": 22
+    },
+    {
+      "type": "iceBlock",
+      "x": 997,
+      "y": 214
+    },
+    {
+      "type": "antiGravityApple",
+      "x": 994,
+      "y": 136
+    },
+    {
+      "type": "colorBlock",
+      "x": 1000,
+      "y": 60,
+      "color": "#ff0000"
+    },
+    {
+      "type": "colorTile",
+      "x": 1005,
+      "y": -19,
+      "color": "#ff0000"
+    },
+    {
+      "type": "teleporter",
+      "x": 752,
+      "y": 98,
+      "cooldownDuration": 1,
+      "teleporterPairId": "pair_AKE1",
+      "teleporterId": "tp_UJSNRD",
+      "transitionDuration": 200,
+      "color": "#ffffff",
+      "syncColorWithPair": true
+    },
+    {
+      "type": "teleporter",
+      "x": 949.267,
+      "y": 93.418,
+      "cooldownDuration": 1,
+      "teleporterPairId": "pair_AKE1",
+      "teleporterId": "tp_JIJO6Z",
+      "transitionDuration": 200,
+      "color": "#ffffff",
+      "syncColorWithPair": true
+    },
+    {
+      "type": "sandBlock",
+      "x": 550.963,
+      "y": -47.025
+    },
+    {
+      "type": "glassBlock",
+      "x": 602.881,
+      "y": -44.659
+    },
+    {
+      "type": "graniteBlock",
+      "x": 666.969,
+      "y": -52.884
+    },
+    {
+      "type": "floorDirt",
+      "x": 575.975,
+      "y": -134.82,
+      "z": 1
+    },
+    {
+      "type": "floorGrass",
+      "x": 635.429,
+      "y": -133.659,
+      "z": 1
+    },
+    {
+      "type": "steelBar",
+      "x": 701.876,
+      "y": -146.071
+    },
+    {
+      "type": "rock1",
+      "x": 600.119,
+      "y": -243.841,
+      "z": 2
+    },
+    {
+      "type": "rock2",
+      "x": 632.581,
+      "y": -244.26,
+      "z": 2
+    },
+    {
+      "type": "tree",
+      "x": 653.208,
+      "y": -249.4,
+      "z": 2
+    },
+    {
+      "type": "oxskull",
+      "x": 699.403,
+      "y": -250.39
+    },
+    {
+      "type": "decorativeFire",
+      "x": 1173.867,
+      "y": 157.954
+    },
+    {
+      "type": "fireball",
+      "x": 1216.595,
+      "y": 158.64
+    },
+    {
+      "type": "signPostUp",
+      "x": 1271.847,
+      "y": 165.358,
+      "z": 3
+    },
+    {
+      "type": "signPostRight",
+      "x": 1312.758,
+      "y": 164.52,
+      "z": 3
+    },
+    {
+      "type": "signPostDown",
+      "x": 1355.533,
+      "y": 161.093,
+      "z": 3
+    },
+    {
+      "type": "signPostLeft",
+      "x": 1403.903,
+      "y": 159.532,
+      "z": 3
+    },
+    {
+      "type": "cloud1",
+      "x": 1455.312,
+      "y": 156.805,
+      "z": 1
+    },
+    {
+      "type": "cloud2",
+      "x": 1506.27,
+      "y": 153.34,
+      "z": 1
+    },
+    {
+      "type": "flower1",
+      "x": 1550.339,
+      "y": 147.895
+    },
+    {
+      "type": "tulip2a",
+      "x": 1239.506,
+      "y": 40.98,
+      "z": 3
+    },
+    {
+      "type": "tulip2b",
+      "x": 1285.628,
+      "y": 42.072,
+      "z": 3
+    }
+  ],
+  "finishLineX": 1672,
+  "completionRequirement": {
+    "type": "crossFinishLine"
+  }
+}

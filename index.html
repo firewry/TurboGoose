@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TurboGoose Level Editor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="editor-container">
+        <canvas id="canvas"></canvas>
+    </div>
+    
+    <div id="right-panel">
+        <button id="toggle-panel">▶</button>
+        <div class="panel-content">
+            <div class="toolbar">
+                <button class="tool-btn active" data-tool="none" title="Select / Move / Remove">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path><path d="M13 13l6 6"></path></svg>
+                </button>
+                <button class="tool-btn" data-tool="Spikes" title="Spike">
+                    <img src="assets/spikes.webp" width="24" height="24" style="pointer-events: none;" alt="Spike">
+                </button>
+                <button class="tool-btn" data-tool="floorDirt" title="Dirt">
+                    <img src="assets/dirt.webp" width="24" height="24" style="pointer-events: none;" alt="Dirt">
+                </button>
+            </div>
+            <div style="flex-grow: 1;"></div>
+            <button id="export-btn" title="Export JSON">
+                <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+            </button>
+        </div>
+    </div>
+
+    <div id="export-modal" class="hidden">
+        <div class="modal-content">
+            <h3>Exported JSON - Level Data</h3>
+            <textarea id="json-output" readonly></textarea>
+            <button id="close-modal">Close</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
