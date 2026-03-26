@@ -37,6 +37,17 @@ let currentTool = 'none'; // 'none' or 'Spikes'
 let objects = [];
 let birdStart = { x: 100, y: 300 };
 let finishLineObj = { type: 'finishLine', x: 500, y: 0 };
+// Global Level Config
+let levelConfig = {
+    scrollSpeed: 2.4,
+    gravity: 0.4,
+    floorEnabled: false,
+    antigravity: false,
+    yTrack: false,
+    gradientTopColor: '#009dff',
+    gradientBottomColor: '#c2ccff'
+};
+
 
 // Tool Preview State
 let previewX = 0;
@@ -65,7 +76,7 @@ function getToolDimensions(tool) {
     if (tool === 'floorDirt') {
         const h = (dirtImg.complete && dirtImg.naturalWidth !== 0) ? dirtImg.naturalHeight * (SPIKE_WIDTH / dirtImg.naturalWidth) : SPIKE_WIDTH;
         // Dirt only needs a tiny adjustment to close the micro gap
-        return { w: SPIKE_WIDTH * 0.98, h: h * 0.98 };
+        return { w: SPIKE_WIDTH * 0.95, h: h * 0.95 };
     }
     return { w: 50, h: 50 };
 }
@@ -436,28 +447,7 @@ function draw() {
     ctx.translate(camera.x, camera.y);
     ctx.scale(camera.zoom, camera.zoom);
 
-    // Draw Finish Line
-    ctx.save();
-    ctx.translate(finishLineObj.x, 0);
-    const sqSize = 30;
-    // Visible Y range
-    const startY = Math.floor((-camera.y) / camera.zoom / sqSize) - 1;
-    const endY = Math.floor((-camera.y + height) / camera.zoom / sqSize) + 5;
-    
-    if (selectedObjects.includes(finishLineObj)) {
-        ctx.fillStyle = 'rgba(0, 255, 204, 0.3)';
-        ctx.fillRect(-sqSize, startY * sqSize, sqSize * 2, (endY - startY) * sqSize);
-    }
-    
-    for (let i = startY; i <= endY; i++) {
-        ctx.fillStyle = (i % 2 === 0) ? '#000000' : '#ffffff';
-        ctx.fillRect(-sqSize, i * sqSize, sqSize, sqSize);
-        ctx.fillStyle = (i % 2 === 0) ? '#ffffff' : '#000000';
-        ctx.fillRect(0, i * sqSize, sqSize, sqSize);
-    }
-    ctx.restore();
-
-    // Draw bird (Goose)
+// Draw bird (Goose)
     ctx.save();
     
     // The goose's true start position in the engine requires a visual offset compared to generic blocks
@@ -593,6 +583,27 @@ function draw() {
         ctx.strokeRect(bx, by, bw, bh);
     }
     
+    // Draw Finish Line
+    ctx.save();
+    ctx.translate(finishLineObj.x, 0);
+    const sqSize = 30;
+    // Visible Y range
+    const startY = Math.floor((-camera.y) / camera.zoom / sqSize) - 1;
+    const endY = Math.floor((-camera.y + height) / camera.zoom / sqSize) + 5;
+
+    if (selectedObjects.includes(finishLineObj)) {
+        ctx.fillStyle = 'rgba(0, 255, 204, 0.3)';
+        ctx.fillRect(-sqSize, startY * sqSize, sqSize * 2, (endY - startY) * sqSize);
+    }
+
+    for (let i = startY; i <= endY; i++) {
+        ctx.fillStyle = (i % 2 === 0) ? '#000000' : '#ffffff';
+        ctx.fillRect(-sqSize, i * sqSize, sqSize, sqSize);
+        ctx.fillStyle = (i % 2 === 0) ? '#ffffff' : '#000000';
+        ctx.fillRect(0, i * sqSize, sqSize, sqSize);
+    }
+    ctx.restore();
+
     ctx.restore(); // Restore Camera
 }
 
@@ -605,18 +616,50 @@ closeModal.addEventListener('click', () => {
     exportModal.classList.add('hidden');
 });
 
+// Settings Modal Logic
+const settingsModal = document.getElementById('settings-modal');
+const closeSettingsModal = document.getElementById('close-settings-modal');
+const settingsBtn = document.getElementById('settings-btn');
+
+settingsBtn.addEventListener('click', () => {
+    document.getElementById('set-scrollSpeed').value = levelConfig.scrollSpeed;
+    document.getElementById('set-gravity').value = levelConfig.gravity;
+    document.getElementById('set-floorEnabled').checked = levelConfig.floorEnabled;
+    document.getElementById('set-antigravity').checked = levelConfig.antigravity;
+    document.getElementById('set-yTrack').checked = levelConfig.yTrack;
+    document.getElementById('set-gradientTop').value = levelConfig.gradientTopColor;
+    document.getElementById('set-gradientBottom').value = levelConfig.gradientBottomColor;
+    settingsModal.classList.remove('hidden');
+});
+
+closeSettingsModal.addEventListener('click', () => {
+    levelConfig.scrollSpeed = Number(document.getElementById('set-scrollSpeed').value);
+    levelConfig.gravity = Number(document.getElementById('set-gravity').value);
+    levelConfig.floorEnabled = document.getElementById('set-floorEnabled').checked;
+    levelConfig.antigravity = document.getElementById('set-antigravity').checked;
+    levelConfig.yTrack = document.getElementById('set-yTrack').checked;
+    levelConfig.gradientTopColor = document.getElementById('set-gradientTop').value;
+    levelConfig.gradientBottomColor = document.getElementById('set-gradientBottom').value;
+    
+    // Update live bg
+    if(editorContainer) editorContainer.style.background = `linear-gradient(to bottom, ${levelConfig.gradientTopColor}, ${levelConfig.gradientBottomColor})`;
+    
+    settingsModal.classList.add('hidden');
+});
+
 // Export
 exportBtn.addEventListener('click', () => {
     const levelData = {
         name: "My Custom Level",
         description: "",
         version: 1.71,
-        scrollSpeed: 2.4,
-        gravity: 0.4,
-        antigravity: false,
-        yTrack: false,
-        gradientTopColor: "#009dff",
-        gradientBottomColor: "#c2ccff",
+        scrollSpeed: levelConfig.scrollSpeed,
+        gravity: levelConfig.gravity,
+        floorEnabled: levelConfig.floorEnabled,
+        antigravity: levelConfig.antigravity,
+        yTrack: levelConfig.yTrack,
+        gradientTopColor: levelConfig.gradientTopColor,
+        gradientBottomColor: levelConfig.gradientBottomColor,
         disableBackgroundMusic: false,
         midiConfig: { restartOnDeath: false, volume: 100 },
         birdStartX: birdStart.x,
