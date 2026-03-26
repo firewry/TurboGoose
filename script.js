@@ -1,6 +1,8 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const editorContainer = document.getElementById('editor-container');
+const propPanel = document.getElementById('properties-panel');
+const propColorInput = document.getElementById('prop-blockColor');
 
 // Camera and scaling
 let camera = { x: 0, y: 0, zoom: 1.5 };
@@ -15,20 +17,136 @@ let SPIKE_HEIGHT = 48;
 const GOOSE_WIDTH = 45; // Approximate true-scale for goose (slightly larger)
 const GOOSE_HEIGHT = 45;
 
+// Helper to safely tint images without destroying main canvas
+const _tintCanvas = document.createElement('canvas');
+const _tintCtx = _tintCanvas.getContext('2d');
+function drawTintedImage(ctx, img, color, x, y, width, height) {
+    if (_tintCanvas.width !== Math.max(1, width)) _tintCanvas.width = width;
+    if (_tintCanvas.height !== Math.max(1, height)) _tintCanvas.height = height;
+    
+    _tintCtx.clearRect(0, 0, width, height);
+    _tintCtx.drawImage(img, 0, 0, width, height);
+    
+    _tintCtx.globalCompositeOperation = 'multiply';
+    _tintCtx.fillStyle = color;
+    _tintCtx.fillRect(0, 0, width, height);
+    
+    _tintCtx.globalCompositeOperation = 'destination-in';
+    _tintCtx.drawImage(img, 0, 0, width, height);
+    _tintCtx.globalCompositeOperation = 'source-over';
+    
+    ctx.drawImage(_tintCanvas, x, y, width, height);
+}
+
 // Load Assets
+let objectConfigs = {};
+let objectImages = {};
+
 const gooseImg = new Image();
 gooseImg.src = 'assets/default_goose.webp';
-
-const spikeImg = new Image();
-spikeImg.src = 'assets/spikes.webp';
-
-const dirtImg = new Image();
-dirtImg.src = 'assets/dirt.webp';
-
-// Force redraw when assets load
 gooseImg.onload = draw;
-spikeImg.onload = draw;
-dirtImg.onload = draw;
+
+function trimTransparentPixels(img) {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+    if (canvas.width === 0 || canvas.height === 0) return img;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
+    let found = false;
+
+    for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+            const alpha = data[(y * canvas.width + x) * 4 + 3];
+            if (alpha > 0) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+                found = true;
+            }
+        }
+    }
+
+    if (!found) {
+        img.trimScaleX = 1;
+        img.trimScaleY = 1;
+        img.originalWidth = canvas.width;
+        img.originalHeight = canvas.height;
+        return img;
+    }
+
+    const trimmedWidth = maxX - minX + 1;
+    const trimmedHeight = maxY - minY + 1;
+
+    const trimmedCanvas = document.createElement('canvas');
+    trimmedCanvas.width = trimmedWidth;
+    trimmedCanvas.height = trimmedHeight;
+    trimmedCanvas.trimScaleX = trimmedWidth / canvas.width;
+    trimmedCanvas.trimScaleY = trimmedHeight / canvas.height;
+    trimmedCanvas.originalWidth = canvas.width;
+    trimmedCanvas.originalHeight = canvas.height;
+
+    const tCtx = trimmedCanvas.getContext('2d');
+    tCtx.drawImage(
+        canvas,
+        minX, minY, trimmedWidth, trimmedHeight,
+        0, 0, trimmedWidth, trimmedHeight
+    );
+
+    return trimmedCanvas;
+}
+
+async function loadObjectConfigs() {
+    try {
+        const response = await fetch('objects.json');
+        objectConfigs = await response.json();
+
+        const toolbar = document.getElementById('toolbar');
+
+        for (const [id, config] of Object.entries(objectConfigs)) {
+            const img = new Image();
+            img.onload = () => {
+                objectImages[id] = trimTransparentPixels(img);
+                draw();
+            };
+            img.src = config.sprite;
+            objectImages[id] = img;
+            
+            const btn = document.createElement('button');
+            btn.className = 'tool-btn';
+            btn.dataset.tool = id;
+            btn.title = config.name;
+            btn.innerHTML = `<img src="${config.icon}" width="24" height="24" style="pointer-events: none;" alt="${config.name}">`;
+            toolbar.appendChild(btn);
+        }
+        
+        // Re-bind tool selection logic
+        const toolBtns = document.querySelectorAll('.tool-btn[data-tool]');
+        toolBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                toolBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentTool = btn.dataset.tool;
+                previewRotation = 0;
+                previewScale = 1;
+                if (typeof updatePropertiesPanel === 'function') updatePropertiesPanel();
+                draw();
+            });
+        });
+        
+        draw(); // draw once configs are ready
+    } catch (e) {
+        console.error("Failed to load objects.json", e);
+    }
+}
+loadObjectConfigs();
 
 // State
 let width = window.innerWidth;
@@ -36,16 +154,17 @@ let height = window.innerHeight;
 let currentTool = 'none'; // 'none' or 'Spikes'
 let objects = [];
 let birdStart = { x: 100, y: 300 };
-let finishLineObj = { type: 'finishLine', x: 500, y: 0 };
+let finishLineObj = { type: 'finishLine', x: 1200, y: 0 };
 // Global Level Config
 let levelConfig = {
     scrollSpeed: 2.4,
     gravity: 0.4,
-    floorEnabled: false,
+    floorEnabled: true,
     antigravity: false,
     yTrack: false,
     gradientTopColor: '#009dff',
-    gradientBottomColor: '#c2ccff'
+    gradientBottomColor: '#c2ccff',
+    lastUsedColor: '#ff0000'
 };
 
 
@@ -53,6 +172,7 @@ let levelConfig = {
 let previewX = 0;
 let previewY = 0;
 let previewRotation = 0;
+let previewScale = 1;
 let isMouseOnCanvas = false;
 
 // Selection & Drag State
@@ -68,15 +188,32 @@ let tileAnchor = { x: 0, y: 0 };
 let tiledLocations = new Set();
 
 function getToolDimensions(tool) {
-    if (tool === 'Spikes') {
-        const h = (spikeImg.complete && spikeImg.naturalWidth !== 0) ? spikeImg.naturalHeight * (SPIKE_WIDTH / spikeImg.naturalWidth) : 48;
-        // Tile slightly sooner to ignore transparent edges and stack vertically without gaps
-        return { w: SPIKE_WIDTH * 0.82, h: h * 0.45 };
-    }
-    if (tool === 'floorDirt') {
-        const h = (dirtImg.complete && dirtImg.naturalWidth !== 0) ? dirtImg.naturalHeight * (SPIKE_WIDTH / dirtImg.naturalWidth) : SPIKE_WIDTH;
-        // Dirt only needs a tiny adjustment to close the micro gap
-        return { w: SPIKE_WIDTH * 0.95, h: h * 0.95 };
+    const config = objectConfigs[tool];
+    if (config) {
+        let w = config.width || SPIKE_WIDTH;
+        let h = w;
+        let trimScaleX = 1;
+        let trimScaleY = 1;
+
+        const img = objectImages[tool];
+        if (img) {
+            trimScaleX = img.trimScaleX || 1;
+            trimScaleY = img.trimScaleY || 1;
+
+            if (config.heightMode === 'aspect') {
+                const imgW = img.originalWidth || img.naturalWidth || img.width;
+                const imgH = img.originalHeight || img.naturalHeight || img.height;
+                if (imgW > 0) {
+                    h = imgH * (w / imgW);
+                } else {
+                    h = 48;
+                }
+            }
+        }
+        return {
+            w: (w * trimScaleX) * (config.tileWidthMod || 1),
+            h: (h * trimScaleY) * (config.tileHeightMod || 1)
+        };
     }
     return { w: 50, h: 50 };
 }
@@ -99,24 +236,12 @@ resizeCanvas();
 // UI Elements
 const togglePanelBtn = document.getElementById('toggle-panel');
 const rightPanel = document.getElementById('right-panel');
-const toolBtns = document.querySelectorAll('.tool-btn');
 const exportBtn = document.getElementById('export-btn');
 
 // Toggle panel
 togglePanelBtn.addEventListener('click', () => {
     rightPanel.classList.toggle('closed');
     togglePanelBtn.textContent = rightPanel.classList.contains('closed') ? '◀' : '▶';
-});
-
-// Tool selection
-toolBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        toolBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        currentTool = btn.dataset.tool;
-        previewRotation = 0; // Reset rotation on tool switch
-        draw();
-    });
 });
 
 // Keyboard Interaction
@@ -224,7 +349,7 @@ canvas.addEventListener('mousedown', (e) => {
     const gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
 
     if (e.button === 0) { // Left click
-        if (currentTool === 'Spikes' || currentTool === 'floorDirt') {
+        if (currentTool !== 'none') {
             isTiling = true;
             tileAnchor = { x: gameX, y: gameY };
             tiledLocations.clear();
@@ -234,7 +359,9 @@ canvas.addEventListener('mousedown', (e) => {
                 type: currentTool,
                 x: Number(gameX.toFixed(2)),
                 y: Number(gameY.toFixed(2)),
-                rotation: previewRotation
+                rotation: previewRotation,
+                s: previewScale,
+                color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
             });
             draw();
         } else if (currentTool === 'none') {
@@ -254,15 +381,13 @@ canvas.addEventListener('mousedown', (e) => {
             draw();
         }
     } else if (e.button === 2) { // Right click
-        if (currentTool === 'none' || currentTool === 'Spikes') {
-            // Remove object
-            let clickedIndex = getObjectIndexAt(gameX, gameY);
-            if (clickedIndex !== -1) {
-                const deletedObj = objects[clickedIndex];
-                objects.splice(clickedIndex, 1);
-                selectedObjects = selectedObjects.filter(o => o !== deletedObj);
-                draw();
-            }
+        // Remove object
+        let clickedIndex = getObjectIndexAt(gameX, gameY);
+        if (clickedIndex !== -1) {
+            const deletedObj = objects[clickedIndex];
+            objects.splice(clickedIndex, 1);
+            selectedObjects = selectedObjects.filter(o => o !== deletedObj);
+            draw();
         }
     }
 });
@@ -291,22 +416,24 @@ canvas.addEventListener('mousemove', (e) => {
         const localX = dx * Math.cos(-rad) - dy * Math.sin(-rad);
         const localY = dx * Math.sin(-rad) + dy * Math.cos(-rad);
         
-        const gridX = Math.round(localX / dims.w);
-        const gridY = Math.round(localY / dims.h);
+        const gridX = Math.round(localX / (dims.w * previewScale));
+        const gridY = Math.round(localY / (dims.h * previewScale));
         const locId = `${gridX},${gridY}`;
-        
+
         if (!tiledLocations.has(locId)) {
             tiledLocations.add(locId);
             
             // Convert local grid coordinates back to world space
-            const worldX = tileAnchor.x + (gridX * dims.w * Math.cos(rad) - gridY * dims.h * Math.sin(rad));
-            const worldY = tileAnchor.y + (gridX * dims.w * Math.sin(rad) + gridY * dims.h * Math.cos(rad));
+            const worldX = tileAnchor.x + (gridX * dims.w * previewScale * Math.cos(rad) - gridY * dims.h * previewScale * Math.sin(rad));
+            const worldY = tileAnchor.y + (gridX * dims.w * previewScale * Math.sin(rad) + gridY * dims.h * previewScale * Math.cos(rad));
             
             objects.push({
                 type: currentTool,
                 x: Number(worldX.toFixed(2)),
                 y: Number(worldY.toFixed(2)),
-                rotation: previewRotation
+                rotation: previewRotation,
+                s: previewScale,
+                color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
             });
         }
     } else if (isDraggingObjects) {
@@ -359,6 +486,26 @@ canvas.addEventListener('mouseup', (e) => {
 
 canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+
+    // Alt + Scroll to scale the preview / selected objects
+    if (e.altKey) {
+        const scaleSpeed = 0.1;
+        const amount = e.deltaY > 0 ? -scaleSpeed : scaleSpeed;
+
+        if (currentTool === 'none' && selectedObjects.length > 0) {
+            selectedObjects.forEach(obj => {
+                if (obj.type === 'finishLine') return;
+                obj.s = Math.max(0.1, (obj.s || 1) + amount);
+                obj.s = Number(obj.s.toFixed(2));
+            });
+            draw();
+        } else if (currentTool !== 'none') {
+            previewScale = Math.max(0.1, previewScale + amount);
+            previewScale = Number(previewScale.toFixed(2));
+            draw();
+        }
+        return;
+    }
     
     // Ctrl + Scroll to carefully rotate the preview
     if (e.ctrlKey) {
@@ -427,9 +574,10 @@ function getObjectAt(x, y) {
 }
 
 function getObjectIndexAt(x, y) {
-    const hitRadius = 20;
     for (let i = objects.length - 1; i >= 0; i--) {
         const obj = objects[i];
+        const scale = obj.s || 1;
+        const hitRadius = 20 * scale;
         if (Math.abs(obj.x - x) < hitRadius && Math.abs(obj.y - y) < hitRadius) {
             return i;
         }
@@ -439,11 +587,12 @@ function getObjectIndexAt(x, y) {
 
 // Drawing
 function draw() {
-    ctx.clearRect(0, 0, width, height);
-    
-    ctx.save();
-    
-    // Apply Camera
+    try {
+        ctx.clearRect(0, 0, width, height);
+
+        ctx.save();
+
+        // Apply Camera
     ctx.translate(camera.x, camera.y);
     ctx.scale(camera.zoom, camera.zoom);
 
@@ -476,100 +625,90 @@ function draw() {
     const sortedObjects = objects;
 
     sortedObjects.forEach(obj => {
-        if (obj.type === 'Spikes') {
+        const config = objectConfigs[obj.type];
+        if (config) {
             ctx.save();
             ctx.translate(obj.x, obj.y);
             ctx.rotate(obj.rotation * Math.PI / 180);
+            if (obj.s !== undefined && obj.s !== 1) ctx.scale(obj.s, obj.s);
+
+            const img = objectImages[obj.type];
+            let w = config.width || SPIKE_WIDTH;
+            let h = w;
             
-            if (spikeImg.complete && spikeImg.naturalWidth !== 0) {
-                // Determine true height using the natural aspect ratio scaled by the known exact game unit width
-                const trueSpikeHeight = spikeImg.naturalHeight * (SPIKE_WIDTH / spikeImg.naturalWidth);
+            let trimScaleX = img ? (img.trimScaleX || 1) : 1;
+            let trimScaleY = img ? (img.trimScaleY || 1) : 1;
+            
+            let baseW = img ? (img.originalWidth || img.naturalWidth || img.width) : 0;
+            let baseH = img ? (img.originalHeight || img.naturalHeight || img.height) : 0;
+            
+            if (img && (img.complete || img instanceof HTMLCanvasElement) && baseW !== 0) {
+                if (config.heightMode === 'aspect') {
+                    h = baseH * (w / baseW);
+                }
                 
-                // The logical center for a placed tile isn't the direct center of the bounding box.
-                // We use offsets based on centering the width, but treating the asset differently on Y
-                ctx.drawImage(spikeImg, -SPIKE_WIDTH / 2, -trueSpikeHeight / 2, SPIKE_WIDTH, trueSpikeHeight);
-                
-                // Selection Highlight
-                if (selectedObjects.includes(obj)) {
-                    ctx.strokeStyle = '#00ffcc';
-                    ctx.lineWidth = 3 / camera.zoom;
-                    ctx.strokeRect(-SPIKE_WIDTH / 2 - 2, -trueSpikeHeight / 2 - 2, SPIKE_WIDTH + 4, trueSpikeHeight + 4);
+                w *= trimScaleX;
+                h *= trimScaleY;
+
+                if (config.colorable) {
+                    drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
+                } else {
+                    ctx.drawImage(img, -w / 2, -h / 2, w, h);
                 }
             } else {
-                // Draw a spike (triangle) fallback
-                ctx.beginPath();
-                ctx.moveTo(0, -15);
-                ctx.lineTo(-15, 15);
-                ctx.lineTo(15, 15);
-                ctx.closePath();
-                ctx.fillStyle = '#ff3333';
-                ctx.fill();
-                ctx.strokeStyle = '#990000';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+                ctx.fillStyle = config.fallbackColor || '#ff8888';
+                ctx.fillRect(-w / 2, -h / 2, w, h);
             }
-            ctx.restore();
-        } else if (obj.type === 'floorDirt') {
-            ctx.save();
-            ctx.translate(obj.x, obj.y);
-            ctx.rotate(obj.rotation * Math.PI / 180);
 
-            if (dirtImg.complete && dirtImg.naturalWidth !== 0) {
-                const trueDirtHeight = dirtImg.naturalHeight * (SPIKE_WIDTH / dirtImg.naturalWidth);
-                ctx.drawImage(dirtImg, -SPIKE_WIDTH / 2, -trueDirtHeight / 2, SPIKE_WIDTH, trueDirtHeight);
-
-                // Selection Highlight
-                if (selectedObjects.includes(obj)) {
-                    ctx.strokeStyle = '#00ffcc';
-                    ctx.lineWidth = 3 / camera.zoom;
-                    ctx.strokeRect(-SPIKE_WIDTH / 2 - 2, -trueDirtHeight / 2 - 2, SPIKE_WIDTH + 4, trueDirtHeight + 4);
-                }
-            } else {
-                ctx.fillStyle = '#654321';
-                ctx.fillRect(-SPIKE_WIDTH / 2, -SPIKE_WIDTH / 2, SPIKE_WIDTH, SPIKE_WIDTH);
-                ctx.strokeStyle = '#4b3010';
-                ctx.strokeRect(-SPIKE_WIDTH / 2, -SPIKE_WIDTH / 2, SPIKE_WIDTH, SPIKE_WIDTH);
+            if (selectedObjects.includes(obj)) {
+                ctx.strokeStyle = config.highlight || '#00ffcc';
+                ctx.lineWidth = 3 / camera.zoom;
+                ctx.strokeRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4);
             }
             ctx.restore();
         }
     });
 
     // Draw Preview Overlay (Ghosts)
-    if (isMouseOnCanvas && currentTool !== 'none') {
+    if (isMouseOnCanvas && currentTool !== 'none' && objectConfigs[currentTool]) {
+        const config = objectConfigs[currentTool];
         ctx.save();
-        ctx.globalAlpha = 0.5; // Make the preview semi-transparent
-        
-        if (currentTool === 'Spikes') {
-            ctx.translate(previewX, previewY);
-            ctx.rotate(previewRotation * Math.PI / 180);
-            
-            if (spikeImg.complete && spikeImg.naturalWidth !== 0) {
-                const trueSpikeHeight = spikeImg.naturalHeight * (SPIKE_WIDTH / spikeImg.naturalWidth);
-                ctx.drawImage(spikeImg, -SPIKE_WIDTH / 2, -trueSpikeHeight / 2, SPIKE_WIDTH, trueSpikeHeight);
-            } else {
-                ctx.beginPath();
-                ctx.moveTo(0, -15);
-                ctx.lineTo(-15, 15);
-                ctx.lineTo(15, 15);
-                ctx.closePath();
-                ctx.fillStyle = '#ff8888';
-                ctx.fill();
-            }
-        } else if (currentTool === 'floorDirt') {
-            ctx.translate(previewX, previewY);
-            ctx.rotate(previewRotation * Math.PI / 180);
+        ctx.globalAlpha = 0.5;
 
-            if (dirtImg.complete && dirtImg.naturalWidth !== 0) {
-                const trueDirtHeight = dirtImg.naturalHeight * (SPIKE_WIDTH / dirtImg.naturalWidth);
-                ctx.drawImage(dirtImg, -SPIKE_WIDTH / 2, -trueDirtHeight / 2, SPIKE_WIDTH, trueDirtHeight);
-            } else {
-                ctx.fillStyle = 'rgba(139, 69, 19, 0.5)';
-                ctx.fillRect(-SPIKE_WIDTH / 2, -SPIKE_WIDTH / 2, SPIKE_WIDTH, SPIKE_WIDTH);
+        ctx.translate(previewX, previewY);
+        ctx.rotate(previewRotation * Math.PI / 180);
+        if (previewScale !== 1) ctx.scale(previewScale, previewScale);
+
+        const img = objectImages[currentTool];
+        let w = config.width || SPIKE_WIDTH;
+        let h = w;
+        
+        let trimScaleX = img ? (img.trimScaleX || 1) : 1;
+        let trimScaleY = img ? (img.trimScaleY || 1) : 1;
+        
+        let baseW = img ? (img.originalWidth || img.naturalWidth || img.width) : 0;
+        let baseH = img ? (img.originalHeight || img.naturalHeight || img.height) : 0;
+
+        if (img && (img.complete || img instanceof HTMLCanvasElement) && baseW !== 0) {
+            if (config.heightMode === 'aspect') {
+                h = baseH * (w / baseW);
             }
+            
+            w *= trimScaleX;
+            h *= trimScaleY;
+
+            if (config.colorable) {
+                drawTintedImage(ctx, img, levelConfig.lastUsedColor, -w / 2, -h / 2, w, h);
+            } else {
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+            }
+        } else {
+            ctx.fillStyle = config.fallbackColor || '#ff8888';
+            ctx.fillRect(-w / 2, -h / 2, w, h);
         }
         ctx.restore();
     }
-    
+
     // Draw Box Selection
     if (isBoxSelecting) {
         ctx.fillStyle = 'rgba(0, 255, 204, 0.2)';
@@ -604,7 +743,53 @@ function draw() {
     }
     ctx.restore();
 
+    // Draw Guides
+    ctx.save();
+    const viewStartX = -camera.x / camera.zoom;
+    const viewEndX = (-camera.x + width) / camera.zoom;
+    ctx.lineWidth = 2 / camera.zoom;
+    ctx.setLineDash([10 / camera.zoom, 10 / camera.zoom]); // Dashed lines for guides
+
+    // Calculate reference coordinates based on a spike width of 75.92 and half width of 37.96.
+    // -28 (top) + 37.96 = 9.96
+    // 481 (middle) - 37.96 = 443.04
+    // 700 (bottom) - 37.96 = 662.04
+
+    if (!levelConfig.yTrack) {
+        ctx.strokeStyle = '#ff0000';
+        
+        // Ceiling death barrier
+        ctx.beginPath();
+        ctx.moveTo(viewStartX, 9.96);
+        ctx.lineTo(viewEndX, 9.96);
+        ctx.stroke();
+
+        // Bottom death barrier
+        ctx.beginPath();
+        ctx.moveTo(viewStartX, 662.04);
+        ctx.lineTo(viewEndX, 662.04);
+        ctx.stroke();
+    }
+
+    if (levelConfig.floorEnabled) {
+        ctx.strokeStyle = '#00ff00';
+        
+        // Floor line
+        ctx.beginPath();
+        ctx.moveTo(viewStartX, 443.04);
+        ctx.lineTo(viewEndX, 443.04);
+        ctx.stroke();
+    }
+    ctx.restore();
+
     ctx.restore(); // Restore Camera
+    } catch (e) {
+        console.error("DRAW ERROR:", e);
+        if (!window.hasAlertedDraw) { alert("Draw Error: " + e.message); window.hasAlertedDraw = true; }
+        ctx.restore(); // Attempt emergency restore
+    }
+
+    if (typeof updatePropertiesPanel === 'function') updatePropertiesPanel();
 }
 
 // Export modal logic
@@ -645,6 +830,7 @@ closeSettingsModal.addEventListener('click', () => {
     if(editorContainer) editorContainer.style.background = `linear-gradient(to bottom, ${levelConfig.gradientTopColor}, ${levelConfig.gradientBottomColor})`;
     
     settingsModal.classList.add('hidden');
+    draw(); // Redraw changes (like guide lines) immediately
 });
 
 // Export
@@ -678,6 +864,12 @@ exportBtn.addEventListener('click', () => {
                 // Convert degrees to radians and round to 3 decimal places
                 exportedObj.a = Number((obj.rotation * Math.PI / 180).toFixed(3));
             }
+            if (obj.s && obj.s !== 1) {
+                exportedObj.s = obj.s;
+            }
+            if (obj.color) {
+                exportedObj.color = obj.color;
+            }
             return exportedObj;
         }),
         finishLineX: finishLineObj.x,
@@ -690,5 +882,52 @@ exportBtn.addEventListener('click', () => {
     jsonOutput.select();
 });
 
+// Properties Panel Logic
+
+function updatePropertiesPanel() {
+    const isPlacing = currentTool !== 'none' && objectConfigs[currentTool] && objectConfigs[currentTool].colorable;
+    const firstColorObj = selectedObjects.find(obj => objectConfigs[obj.type] && objectConfigs[obj.type].colorable);
+    const isSelectingColorItem = !!firstColorObj;
+
+    if (isPlacing || isSelectingColorItem) {
+        propPanel.classList.remove('closed');
+        
+        // Update color preview without disrupting active user input
+        if (document.activeElement !== propColorInput) {
+            if (isSelectingColorItem) {
+                propColorInput.value = firstColorObj.color || levelConfig.lastUsedColor;
+            } else {
+                propColorInput.value = levelConfig.lastUsedColor;
+            }
+        }
+    } else {
+        propPanel.classList.add('closed');
+    }
+}
+
+// Ensure the panel handles color changes dynamically
+propColorInput.addEventListener('input', (e) => {
+    const val = e.target.value;
+    levelConfig.lastUsedColor = val;
+    let changed = false;
+    
+    if (selectedObjects.length > 0) {
+        selectedObjects.forEach(obj => {
+            if (objectConfigs[obj.type] && objectConfigs[obj.type].colorable) {
+                obj.color = val;
+                changed = true;
+            }
+        });
+    } else if (currentTool !== 'none' && objectConfigs[currentTool] && objectConfigs[currentTool].colorable) {
+        changed = true; // Still trigger draw to tint the floating ghost preview
+    }
+    
+    if (changed) {
+        draw();
+    }
+});
+
 // Initial draw
 draw();
+
+

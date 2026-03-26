@@ -1,0 +1,48 @@
+{
+  "Spikes": {
+    "name": "Spikes",
+    "icon": "assets/spikes.webp",
+    "sprite": "assets/spikes.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#ff8888",
+    "tileWidthMod": 0.82,
+    "tileHeightMod": 0.45
+  },
+  "floorDirt": {
+    "name": "Dirt",
+    "icon": "assets/dirt.webp",
+    "sprite": "assets/dirt.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "rgba(139, 69, 19, 0.5)",
+    "tileWidthMod": 0.95,
+    "tileHeightMod": 0.95
+  },
+  "colorBlock": {
+    "name": "Color Block",
+    "icon": "assets/color_block.webp",
+    "sprite": "assets/color_block.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": true,
+    "highlight": "#00ffcc",
+    "fallbackColor": "#ffffff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "colorTile": {
+    "name": "Color Tile",
+    "icon": "assets/color_tile.webp",
+    "sprite": "assets/color_tile.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": true,
+    "highlight": "#ff00ff",
+    "fallbackColor": "#ffffff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  }
+}

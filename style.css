@@ -162,3 +162,42 @@ canvas {
     padding: 5px;
     border-radius: 4px;
 }
+
+/* Properties Panel at Bottom */
+#properties-panel {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    padding: 10px 20px;
+    border-radius: 10px 10px 0 0;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.5);
+    color: white;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    transition: transform 0.3s ease-in-out;
+    z-index: 10;
+}
+
+#properties-panel.closed {
+    transform: translate(-50%, 100%);
+}
+
+#properties-panel label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+#prop-blockColor {
+    background: transparent;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    width: 40px;
+    height: 30px;
+}
