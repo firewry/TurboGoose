@@ -23,7 +23,7 @@ canvas {
     top: 0;
     right: 0;
     height: 100%;
-    width: 170px;
+    width: 220px;
     background: #222;
     transition: transform 0.3s;
     display: flex;
@@ -79,7 +79,7 @@ canvas {
 
 .toolbar {
     display: grid;
-    grid-template-columns: repeat(3, 40px);
+    grid-template-columns: repeat(4, 40px);
     justify-content: center;
     gap: 10px;
 }

@@ -147,7 +147,11 @@ async function loadObjectConfigs() {
         const response = await fetch('objects.json');
         objectConfigs = await response.json();
 
-        const toolbar = document.getElementById('toolbar');
+        const toolbarByCategory = {
+            objects: document.getElementById('toolbar'),
+            consumables: document.getElementById('consumables-toolbar'),
+            decoration: document.getElementById('decoration-toolbar')
+        };
 
         for (const [id, config] of Object.entries(objectConfigs)) {
             const img = new Image();
@@ -163,7 +167,10 @@ async function loadObjectConfigs() {
             btn.dataset.tool = id;
             btn.title = config.name;
             btn.innerHTML = `<img src="${config.icon}" width="24" height="24" style="pointer-events: none;" alt="${config.name}">`;
-            toolbar.appendChild(btn);
+
+            const categoryKey = (config.category || 'objects').toLowerCase();
+            const targetToolbar = toolbarByCategory[categoryKey] || toolbarByCategory.objects;
+            if (targetToolbar) targetToolbar.appendChild(btn);
         }
         
         // Re-bind tool selection logic
@@ -2932,6 +2939,38 @@ closeSettingsModal.addEventListener('click', () => {
 
 // Export
 exportBtn.addEventListener('click', () => {
+    const BULLET_TOOL_TYPES = new Set(['catBullet']);
+    const bullets = [];
+    const genericObjects = [];
+
+    for (const obj of objects) {
+        if (BULLET_TOOL_TYPES.has(obj.type)) {
+            bullets.push({
+                x: obj.x,
+                y: obj.y,
+                a: Number((((obj.rotation || 0) * Math.PI) / 180).toFixed(3))
+            });
+            continue;
+        }
+
+        const exportedObj = {
+            type: obj.type,
+            x: obj.x,
+            y: obj.y
+        };
+        if (obj.rotation) {
+            // Convert degrees to radians and round to 3 decimal places
+            exportedObj.a = Number((obj.rotation * Math.PI / 180).toFixed(3));
+        }
+        if (obj.s && obj.s !== 1) {
+            exportedObj.s = obj.s;
+        }
+        if (obj.color) {
+            exportedObj.color = obj.color;
+        }
+        genericObjects.push(exportedObj);
+    }
+
     const levelData = {
         name: "My Custom Level",
         description: "",
@@ -2948,27 +2987,9 @@ exportBtn.addEventListener('click', () => {
         birdStartX: birdStart.x,
         birdStartY: birdStart.y,
         pipes: [],
-        bullets: [],
-        bulletTriggers: [],
+        bullets,
         layers: { currentLayer: 1, maxLayers: 3 },
-        genericObjects: objects.map(obj => {
-            const exportedObj = {
-                type: obj.type,
-                x: obj.x,
-                y: obj.y
-            };
-            if (obj.rotation) {
-                // Convert degrees to radians and round to 3 decimal places
-                exportedObj.a = Number((obj.rotation * Math.PI / 180).toFixed(3));
-            }
-            if (obj.s && obj.s !== 1) {
-                exportedObj.s = obj.s;
-            }
-            if (obj.color) {
-                exportedObj.color = obj.color;
-            }
-            return exportedObj;
-        }),
+        genericObjects,
         finishLineX: finishLineObj.x,
         completionRequirement: { type: "crossFinishLine" }
     };
