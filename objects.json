@@ -44,5 +44,16 @@
     "fallbackColor": "#ffffff",
     "tileWidthMod": 1,
     "tileHeightMod": 1
+  },
+  "thwompPipe": {
+    "name": "Thwomp Pipe",
+    "icon": "assets/long_pipe.webp",
+    "sprite": "assets/long_pipe.webp",
+    "width": 210,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#00aa00",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
   }
 }

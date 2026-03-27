@@ -46,61 +46,101 @@ const gooseImg = new Image();
 gooseImg.src = 'assets/default_goose.webp';
 gooseImg.onload = draw;
 
-function trimTransparentPixels(img) {
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth || img.width;
-    canvas.height = img.naturalHeight || img.height;
-    if (canvas.width === 0 || canvas.height === 0) return img;
-    
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
+function calculateTransparentTrims(img, config) {
+    if (!img.naturalWidth || !img.naturalHeight) {
+        config.trimScaleX = 1;
+        config.trimScaleY = 1;
+        return;
+    }
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
-    
-    let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
-    let found = false;
+    const ALPHA_THRESHOLD = 16;
+    const COLOR_TOLERANCE = 24;
 
-    for (let y = 0; y < canvas.height; y++) {
-        for (let x = 0; x < canvas.width; x++) {
-            const alpha = data[(y * canvas.width + x) * 4 + 3];
-            if (alpha > 0) {
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-                found = true;
+    const colorDistance = (r1, g1, b1, r2, g2, b2) => {
+        const dr = r1 - r2;
+        const dg = g1 - g2;
+        const db = b1 - b2;
+        return Math.sqrt(dr * dr + dg * dg + db * db);
+    };
+
+    const updateBoundsFromPredicate = (canvas, data, predicate) => {
+        let minX = canvas.width;
+        let minY = canvas.height;
+        let maxX = -1;
+        let maxY = -1;
+        let found = false;
+
+        for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+                const offset = (y * canvas.width + x) * 4;
+                if (predicate(data, offset)) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                    found = true;
+                }
             }
         }
+
+        return { minX, minY, maxX, maxY, found };
+    };
+
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);      
+    const data = imageData.data;
+
+    let bounds = updateBoundsFromPredicate(canvas, data, (pixelData, offset) => pixelData[offset + 3] >= ALPHA_THRESHOLD);
+
+    const alphaBoundsFullImage = bounds.found
+        && bounds.minX === 0
+        && bounds.minY === 0
+        && bounds.maxX === canvas.width - 1
+        && bounds.maxY === canvas.height - 1;
+
+    if (alphaBoundsFullImage) {
+        const corners = [
+            0,
+            ((canvas.width - 1) * 4),
+            (((canvas.height - 1) * canvas.width) * 4),
+            ((((canvas.height - 1) * canvas.width) + (canvas.width - 1)) * 4)
+        ];
+
+        const averageCorner = corners.reduce((acc, offset) => {
+            acc.r += data[offset];
+            acc.g += data[offset + 1];
+            acc.b += data[offset + 2];
+            return acc;
+        }, { r: 0, g: 0, b: 0 });
+
+        const bgR = averageCorner.r / corners.length;
+        const bgG = averageCorner.g / corners.length;
+        const bgB = averageCorner.b / corners.length;
+
+        bounds = updateBoundsFromPredicate(canvas, data, (pixelData, offset) => {
+            const alpha = pixelData[offset + 3];
+            if (alpha < ALPHA_THRESHOLD) return false;
+            const dist = colorDistance(pixelData[offset], pixelData[offset + 1], pixelData[offset + 2], bgR, bgG, bgB);
+            return dist > COLOR_TOLERANCE;
+        });
     }
 
-    if (!found) {
-        img.trimScaleX = 1;
-        img.trimScaleY = 1;
-        img.originalWidth = canvas.width;
-        img.originalHeight = canvas.height;
-        return img;
+    if (bounds.found) {
+        const minX = bounds.minX;
+        const minY = bounds.minY;
+        const maxX = bounds.maxX;
+        const maxY = bounds.maxY;
+        config.trimScaleX = (maxX - minX + 1) / canvas.width;
+        config.trimScaleY = (maxY - minY + 1) / canvas.height;
+    } else {
+        config.trimScaleX = 1;
+        config.trimScaleY = 1;
     }
-
-    const trimmedWidth = maxX - minX + 1;
-    const trimmedHeight = maxY - minY + 1;
-
-    const trimmedCanvas = document.createElement('canvas');
-    trimmedCanvas.width = trimmedWidth;
-    trimmedCanvas.height = trimmedHeight;
-    trimmedCanvas.trimScaleX = trimmedWidth / canvas.width;
-    trimmedCanvas.trimScaleY = trimmedHeight / canvas.height;
-    trimmedCanvas.originalWidth = canvas.width;
-    trimmedCanvas.originalHeight = canvas.height;
-
-    const tCtx = trimmedCanvas.getContext('2d');
-    tCtx.drawImage(
-        canvas,
-        minX, minY, trimmedWidth, trimmedHeight,
-        0, 0, trimmedWidth, trimmedHeight
-    );
-
-    return trimmedCanvas;
 }
 
 async function loadObjectConfigs() {
@@ -113,7 +153,7 @@ async function loadObjectConfigs() {
         for (const [id, config] of Object.entries(objectConfigs)) {
             const img = new Image();
             img.onload = () => {
-                objectImages[id] = trimTransparentPixels(img);
+                calculateTransparentTrims(img, config);
                 draw();
             };
             img.src = config.sprite;
@@ -190,29 +230,30 @@ let tiledLocations = new Set();
 function getToolDimensions(tool) {
     const config = objectConfigs[tool];
     if (config) {
+        const img = objectImages[tool];
         let w = config.width || SPIKE_WIDTH;
         let h = w;
-        let trimScaleX = 1;
-        let trimScaleY = 1;
 
-        const img = objectImages[tool];
+        if ((config.trimScaleX === undefined || config.trimScaleY === undefined) && img && img.complete) {
+            calculateTransparentTrims(img, config);
+        }
+
         if (img) {
-            trimScaleX = img.trimScaleX || 1;
-            trimScaleY = img.trimScaleY || 1;
-
             if (config.heightMode === 'aspect') {
-                const imgW = img.originalWidth || img.naturalWidth || img.width;
-                const imgH = img.originalHeight || img.naturalHeight || img.height;
+                const imgW = img.naturalWidth || img.width;
+                const imgH = img.naturalHeight || img.height;
                 if (imgW > 0) {
                     h = imgH * (w / imgW);
                 } else {
                     h = 48;
                 }
+            } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
+                h = img.naturalHeight || img.height || w;
             }
         }
         return {
-            w: (w * trimScaleX) * (config.tileWidthMod || 1),
-            h: (h * trimScaleY) * (config.tileHeightMod || 1)
+            w: (w * (config.trimScaleX || 1)) * (config.tileWidthMod || 1),
+            h: (h * (config.trimScaleY || 1)) * (config.tileHeightMod || 1)
         };
     }
     return { w: 50, h: 50 };
@@ -635,20 +676,16 @@ function draw() {
             const img = objectImages[obj.type];
             let w = config.width || SPIKE_WIDTH;
             let h = w;
-            
-            let trimScaleX = img ? (img.trimScaleX || 1) : 1;
-            let trimScaleY = img ? (img.trimScaleY || 1) : 1;
-            
-            let baseW = img ? (img.originalWidth || img.naturalWidth || img.width) : 0;
-            let baseH = img ? (img.originalHeight || img.naturalHeight || img.height) : 0;
-            
-            if (img && (img.complete || img instanceof HTMLCanvasElement) && baseW !== 0) {
+
+            let baseW = img ? (img.naturalWidth || img.width) : 0;
+            let baseH = img ? (img.naturalHeight || img.height) : 0;
+
+            if (img && img.complete && baseW !== 0) {
                 if (config.heightMode === 'aspect') {
                     h = baseH * (w / baseW);
+                } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
+                    h = baseH;
                 }
-                
-                w *= trimScaleX;
-                h *= trimScaleY;
 
                 if (config.colorable) {
                     drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
@@ -682,20 +719,16 @@ function draw() {
         const img = objectImages[currentTool];
         let w = config.width || SPIKE_WIDTH;
         let h = w;
-        
-        let trimScaleX = img ? (img.trimScaleX || 1) : 1;
-        let trimScaleY = img ? (img.trimScaleY || 1) : 1;
-        
-        let baseW = img ? (img.originalWidth || img.naturalWidth || img.width) : 0;
-        let baseH = img ? (img.originalHeight || img.naturalHeight || img.height) : 0;
 
-        if (img && (img.complete || img instanceof HTMLCanvasElement) && baseW !== 0) {
+        let baseW = img ? (img.naturalWidth || img.width) : 0;
+        let baseH = img ? (img.naturalHeight || img.height) : 0;
+
+        if (img && img.complete && baseW !== 0) {
             if (config.heightMode === 'aspect') {
                 h = baseH * (w / baseW);
+            } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
+                h = baseH;
             }
-            
-            w *= trimScaleX;
-            h *= trimScaleY;
 
             if (config.colorable) {
                 drawTintedImage(ctx, img, levelConfig.lastUsedColor, -w / 2, -h / 2, w, h);
