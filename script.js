@@ -515,23 +515,57 @@ const GOOSE_HEIGHT = 45;
 // Helper to safely tint images without destroying main canvas
 const _tintCanvas = document.createElement('canvas');
 const _tintCtx = _tintCanvas.getContext('2d');
-function drawTintedImage(ctx, img, color, x, y, width, height) {
-    if (_tintCanvas.width !== Math.max(1, width)) _tintCanvas.width = width;
-    if (_tintCanvas.height !== Math.max(1, height)) _tintCanvas.height = height;
+const tintedSpriteCache = new Map();
+const MAX_TINT_CACHE_ENTRIES = 800;
 
-    _tintCtx.clearRect(0, 0, width, height);
+function getTintCacheKey(img, color, width, height) {
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    return `${img.src}|${color}|${w}x${h}`;
+}
+
+function getTintedSprite(img, color, width, height) {
+    const cacheKey = getTintCacheKey(img, color, width, height);
+    if (tintedSpriteCache.has(cacheKey)) {
+        return tintedSpriteCache.get(cacheKey);
+    }
+
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+
+    _tintCanvas.width = w;
+    _tintCanvas.height = h;
+    _tintCtx.clearRect(0, 0, w, h);
     _tintCtx.imageSmoothingEnabled = false;
-    _tintCtx.drawImage(img, 0, 0, width, height);
+    _tintCtx.drawImage(img, 0, 0, w, h);
 
     _tintCtx.globalCompositeOperation = 'multiply';
     _tintCtx.fillStyle = color;
-    _tintCtx.fillRect(0, 0, width, height);
+    _tintCtx.fillRect(0, 0, w, h);
 
     _tintCtx.globalCompositeOperation = 'destination-in';
-    _tintCtx.drawImage(img, 0, 0, width, height);
+    _tintCtx.drawImage(img, 0, 0, w, h);
     _tintCtx.globalCompositeOperation = 'source-over';
 
-    ctx.drawImage(_tintCanvas, x, y, width, height);
+    const cached = document.createElement('canvas');
+    cached.width = w;
+    cached.height = h;
+    const cachedCtx = cached.getContext('2d');
+    cachedCtx.imageSmoothingEnabled = false;
+    cachedCtx.drawImage(_tintCanvas, 0, 0);
+
+    tintedSpriteCache.set(cacheKey, cached);
+    if (tintedSpriteCache.size > MAX_TINT_CACHE_ENTRIES) {
+        const oldestKey = tintedSpriteCache.keys().next().value;
+        tintedSpriteCache.delete(oldestKey);
+    }
+
+    return cached;
+}
+
+function drawTintedImage(ctx, img, color, x, y, width, height) {
+    const tintedSprite = getTintedSprite(img, color, width, height);
+    ctx.drawImage(tintedSprite, x, y, width, height);
 }
 
 // Load Assets
@@ -2298,8 +2332,17 @@ if (clearBtn) {
             runUndoableAction(() => {
                 objects = [];
                 selectedObjects = [];
+                objectClipboard = [];
+                layerState = {
+                    nextId: 2,
+                    activeId: 1,
+                    items: [
+                        { id: 1, name: 'Layer 1', hidden: false }
+                    ]
+                };
                 birdStart = { x: 100, y: 300 };
                 finishLineObj = { type: 'finishLine', x: 1200, y: 0 };
+                renderLayersUI();
                 draw();
             });
         }
@@ -3054,6 +3097,9 @@ function draw() {
         const config = objectConfigs[obj.type];
         if (config) {
             ctx.save();
+            if (!isObjectEditableInCurrentLayer(obj)) {
+                ctx.globalAlpha = 0.72;
+            }
             ctx.translate(obj.x, obj.y);
             ctx.rotate(obj.rotation * Math.PI / 180);
             if (obj.s !== undefined && obj.s !== 1) ctx.scale(obj.s, obj.s);
@@ -3217,26 +3263,6 @@ function draw() {
         ctx.beginPath();
         ctx.arc(cursorWorldX, cursorWorldY, brushRadius, 0, Math.PI * 2);
         ctx.fill();
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    if (isDrawingBrush && brushDraftPoints.length > 0) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(255, 209, 102, 0.5)';
-        ctx.fillStyle = 'rgba(255, 209, 102, 0.2)';
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = brushRadius * 2;
-        
-        ctx.beginPath();
-        ctx.moveTo(brushDraftPoints[0].x, brushDraftPoints[0].y);
-        for (let i = 1; i < brushDraftPoints.length; i++) {
-            ctx.lineTo(brushDraftPoints[i].x, brushDraftPoints[i].y);
-        }
-        if (brushDraftPoints.length === 1) {
-            ctx.lineTo(brushDraftPoints[0].x + 0.1, brushDraftPoints[0].y);
-        }
         ctx.stroke();
         ctx.restore();
     }
