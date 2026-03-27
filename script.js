@@ -814,145 +814,267 @@ function fillLassoWithCurrentTool() {
 
     const dims = getToolDimensions(currentTool);
     const baseScale = previewScale || 1;
-    const baseW = Math.max(1, dims.w * baseScale);
-    const baseH = Math.max(1, dims.h * baseScale);
-    const minDim = Math.max(1, Math.min(baseW, baseH));
+    const tileW = Math.max(1, dims.w * baseScale);
+    const tileH = Math.max(1, dims.h * baseScale);
+    const rotDeg = previewRotation || 0;
+    const rotRad = rotDeg * Math.PI / 180;
+    const cosR = Math.cos(rotRad);
+    const sinR = Math.sin(rotRad);
+
     const bounds = getPolygonBounds(lassoPolygon);
-    const maxDepth = 6;
-    const rootSquare = Math.max(8, minDim * 1.25);
-    const adaptiveSquares = collectAdaptiveSquaresForPolygon(lassoPolygon, rootSquare, maxDepth);
-
-    adaptiveSquares.sort((a, b) => {
-        const aPriority = a.cls === 'intersect' ? 0 : 1;
-        const bPriority = b.cls === 'intersect' ? 0 : 1;
-        if (aPriority !== bPriority) return aPriority - bPriority;
-        return b.size - a.size;
-    });
-
-    const placedKeys = new Set();
     const maxObjects = 45000;
+    const placedTiles = []; // track {x, y, w, h, rot} for coverage checks
 
-    const placeSquare = (square, baseRotation) => {
-        if (objects.length >= maxObjects) return;
+    // Inset polygon slightly (by 0.5px) to ensure tiles don't touch the boundary
+    // This provides a safety margin against floating-point edge cases
+    const insetPolygon = insetPolygonByAmount(lassoPolygon, 0.5);
+    const checkPolygon = (insetPolygon && insetPolygon.length >= 3) ? insetPolygon : lassoPolygon;
 
-        const center = { x: square.cx, y: square.cy };
-        const targetScale = square.size / Math.max(1, dims.w);
-        const scaleCandidates = [
-            targetScale * 1.04,
-            targetScale,
-            targetScale * 0.98,
-            targetScale * 0.95,
-            targetScale * 0.92,
-            targetScale * 0.88,
-            targetScale * 0.84,
-            targetScale * 0.8,
-            targetScale * 0.76,
-            targetScale * 0.72,
-            targetScale * 0.68,
-            targetScale * 0.64,
-            targetScale * 0.6
-        ].map(value => clamp(value, baseScale * 0.55, baseScale * 1.2));
+    function placeTile(cx, cy, scale, rot) {
+        if (objects.length >= maxObjects) return false;
+        const s = Number(scale.toFixed(3));
+        const w = dims.w * s;
+        const h = dims.h * s;
+        // Verify ALL sample points of the rotated rect are inside the polygon
+        if (!isRotatedRectInsidePolygon(cx, cy, w, h, rot, checkPolygon)) return false;
 
-        const candidateRotations = [
-            snapAngleDeg(baseRotation, 1),
-            snapAngleDeg(baseRotation + 2, 1),
-            snapAngleDeg(baseRotation - 2, 1),
-            previewRotation
-        ];
-
-        for (const rotation of candidateRotations) {
-            const rot = snapAngleDeg(rotation, 1);
-            const key = `${Math.round(center.x * 10)},${Math.round(center.y * 10)},${Math.round(square.size * 10)},${Math.round(rot * 10)}`;
-            if (placedKeys.has(key)) continue;
-            for (const scale of scaleCandidates) {
-                const tileW = dims.w * scale;
-                const tileH = dims.h * scale;
-                if (!isRotatedRectInsidePolygon(center.x, center.y, tileW, tileH, rot, lassoPolygon)) continue;
-
-                objects.push({
-                    type: currentTool,
-                    x: Number(center.x.toFixed(2)),
-                    y: Number(center.y.toFixed(2)),
-                    rotation: Number(rot.toFixed(2)),
-                    s: Number(scale.toFixed(3)),
-                    color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
-                });
-                markUndoDirty();
-                placedKeys.add(key);
-                return;
-            }
-        }
-    };
-
-    for (const square of adaptiveSquares) {
-        const near = getNearestBoundarySample({ x: square.cx, y: square.cy }, lassoPolygon);
-        const rotation = square.cls === 'inside'
-            ? (previewRotation + normalizeAngleDeg(near.angleDeg - previewRotation) * 0.22)
-            : near.angleDeg;
-        placeSquare(square, rotation);
+        objects.push({
+            type: currentTool,
+            x: Number(cx.toFixed(2)),
+            y: Number(cy.toFixed(2)),
+            rotation: Number(rot.toFixed(2)),
+            s: s,
+            color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
+        });
+        placedTiles.push({ x: cx, y: cy, w, h, rot });
+        markUndoDirty();
+        return true;
     }
 
-    const edgeSpacing = Math.max(4, minDim * 0.22);
-    const edgeSize = Math.max(3, minDim * 0.6);
-    for (let i = 0; i < lassoPolygon.length; i++) {
-        const a = lassoPolygon[i];
-        const b = lassoPolygon[(i + 1) % lassoPolygon.length];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const length = Math.hypot(dx, dy);
-        if (length < 1) continue;
-
-        const tangent = snapAngleDeg(Math.atan2(dy, dx) * 180 / Math.PI, 1);
-        const nx = -dy / length;
-        const ny = dx / length;
-
-        const testA = { x: a.x + nx * 6, y: a.y + ny * 6 };
-        const testB = { x: a.x - nx * 6, y: a.y - ny * 6 };
-        let inwardX = nx;
-        let inwardY = ny;
-        if (pointInPolygonInclusive(testB, lassoPolygon) && !pointInPolygonInclusive(testA, lassoPolygon)) {
-            inwardX = -nx;
-            inwardY = -ny;
-        }
-
-        const steps = Math.max(1, Math.ceil(length / edgeSpacing));
-        for (let step = 0; step <= steps; step++) {
-            const t = step / steps;
-            const px = a.x + dx * t;
-            const py = a.y + dy * t;
-            for (const inset of [0.08, 0.22, 0.36]) {
-                const cx = px + inwardX * edgeSize * inset;
-                const cy = py + inwardY * edgeSize * inset;
-                if (!pointInPolygonInclusive({ x: cx, y: cy }, lassoPolygon)) continue;
-                placeSquare({ cx, cy, size: edgeSize, cls: 'intersect' }, tangent);
+    function isPointCoveredByPlacedTile(px, py) {
+        for (let i = placedTiles.length - 1; i >= 0; i--) {
+            const t = placedTiles[i];
+            if (pointInRotatedRect({ x: px, y: py }, t.x, t.y, t.w, t.h, t.rot)) {
+                return true;
             }
+        }
+        return false;
+    }
+
+    // === PHASE 1: Interior grid fill ===
+    // Transform the bounding box into the rotated coordinate frame, lay a grid, transform back
+    const pad = Math.max(tileW, tileH) * 2;
+    const expandedMinX = bounds.minX - pad;
+    const expandedMinY = bounds.minY - pad;
+    const expandedMaxX = bounds.maxX + pad;
+    const expandedMaxY = bounds.maxY + pad;
+
+    // Corners of expanded bounding box
+    const bboxCorners = [
+        { x: expandedMinX, y: expandedMinY },
+        { x: expandedMaxX, y: expandedMinY },
+        { x: expandedMaxX, y: expandedMaxY },
+        { x: expandedMinX, y: expandedMaxY }
+    ];
+
+    // Rotate corners into tile-local frame
+    const rotatedCorners = bboxCorners.map(c => ({
+        u: c.x * cosR + c.y * sinR,
+        v: -c.x * sinR + c.y * cosR
+    }));
+
+    const minU = Math.min(...rotatedCorners.map(c => c.u));
+    const maxU = Math.max(...rotatedCorners.map(c => c.u));
+    const minV = Math.min(...rotatedCorners.map(c => c.v));
+    const maxV = Math.max(...rotatedCorners.map(c => c.v));
+
+    // Snap grid start to tile-size multiples
+    const gridStartU = Math.floor(minU / tileW) * tileW + tileW / 2;
+    const gridStartV = Math.floor(minV / tileH) * tileH + tileH / 2;
+
+    for (let v = gridStartV; v <= maxV; v += tileH) {
+        for (let u = gridStartU; u <= maxU; u += tileW) {
+            // Transform back to world coordinates
+            const wx = u * cosR - v * sinR;
+            const wy = u * sinR + v * cosR;
+
+            // Quick reject: is center even inside polygon?
+            if (!pointInPolygon({ x: wx, y: wy }, lassoPolygon)) continue;
+
+            placeTile(wx, wy, baseScale, rotDeg);
         }
     }
 
-    const closureStep = Math.max(2, minDim * 0.12);
-    const closureSquare = Math.max(3, minDim * 0.24);
+    // === PHASE 2: Boundary coverage with shrinking tiles ===
+    // Scan a fine grid and for any uncovered interior point, try to place a tile
+    const minTileDim = Math.min(tileW, tileH);
+    const scanSpacing = Math.max(1.5, minTileDim * 0.15);
+    const scaleSteps = [];
+    for (let s = 1.0; s >= 0.12; s -= 0.05) {
+        scaleSteps.push(s);
+    }
+    // Add very small steps for tight corners
+    scaleSteps.push(0.10, 0.08, 0.06, 0.04);
 
-    for (let y = bounds.minY; y <= bounds.maxY; y += closureStep) {
-        for (let x = bounds.minX; x <= bounds.maxX; x += closureStep) {
-            const p = { x, y };
-            if (!pointInPolygonInclusive(p, lassoPolygon)) continue;
+    // Build spatial index for faster coverage checks
+    const cellSize = Math.max(tileW, tileH) * 1.5;
+    const spatialGrid = new Map();
 
-            let covered = false;
-            for (let i = objects.length - 1; i >= 0; i--) {
-                const obj = objects[i];
-                if (obj.type !== currentTool) continue;
-                const scale = obj.s || 1;
-                if (pointInRotatedRect(p, obj.x, obj.y, dims.w * scale, dims.h * scale, obj.rotation || 0)) {
-                    covered = true;
-                    break;
+    function getSpatialKey(x, y) {
+        return `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+    }
+
+    function addToSpatialGrid(tile) {
+        // Add tile to all cells it could overlap
+        const r = Math.max(tile.w, tile.h) * 0.71; // half-diagonal
+        const minCX = Math.floor((tile.x - r) / cellSize);
+        const maxCX = Math.floor((tile.x + r) / cellSize);
+        const minCY = Math.floor((tile.y - r) / cellSize);
+        const maxCY = Math.floor((tile.y + r) / cellSize);
+        for (let cy = minCY; cy <= maxCY; cy++) {
+            for (let cx = minCX; cx <= maxCX; cx++) {
+                const key = `${cx},${cy}`;
+                let bucket = spatialGrid.get(key);
+                if (!bucket) {
+                    bucket = [];
+                    spatialGrid.set(key, bucket);
+                }
+                bucket.push(tile);
+            }
+        }
+    }
+
+    function isPointCoveredSpatial(px, py) {
+        const key = getSpatialKey(px, py);
+        const bucket = spatialGrid.get(key);
+        if (!bucket) return false;
+        for (let i = bucket.length - 1; i >= 0; i--) {
+            const t = bucket[i];
+            if (pointInRotatedRect({ x: px, y: py }, t.x, t.y, t.w, t.h, t.rot)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Index all Phase 1 tiles
+    for (const tile of placedTiles) {
+        addToSpatialGrid(tile);
+    }
+
+    // Collect uncovered interior points
+    const uncoveredPoints = [];
+    for (let sy = bounds.minY; sy <= bounds.maxY; sy += scanSpacing) {
+        // Use scanline intersections for fast inside detection
+        const intersections = getScanlineIntersections(lassoPolygon, sy);
+        for (let si = 0; si + 1 < intersections.length; si += 2) {
+            const xStart = intersections[si];
+            const xEnd = intersections[si + 1];
+            for (let sx = Math.ceil(xStart / scanSpacing) * scanSpacing; sx <= xEnd; sx += scanSpacing) {
+                if (!isPointCoveredSpatial(sx, sy)) {
+                    uncoveredPoints.push({ x: sx, y: sy });
                 }
             }
-            if (covered) continue;
-
-            const near = getNearestBoundarySample(p, lassoPolygon);
-            placeSquare({ cx: x, cy: y, size: closureSquare, cls: 'intersect' }, near.angleDeg);
         }
     }
+
+    // Try to cover each uncovered point
+    for (const pt of uncoveredPoints) {
+        if (objects.length >= maxObjects) break;
+        if (isPointCoveredSpatial(pt.x, pt.y)) continue; // may have been covered by a nearby placement
+
+        for (const sFrac of scaleSteps) {
+            const tryScale = baseScale * sFrac;
+            if (placeTile(pt.x, pt.y, tryScale, rotDeg)) {
+                addToSpatialGrid(placedTiles[placedTiles.length - 1]);
+                break;
+            }
+        }
+    }
+
+    // === PHASE 3: Final gap closure ===
+    // Even finer scan to catch any remaining micro-gaps
+    const fineSpacing = Math.max(1, minTileDim * 0.06);
+    const fineMinScale = baseScale * 0.04;
+
+    for (let sy = bounds.minY; sy <= bounds.maxY; sy += fineSpacing) {
+        const intersections = getScanlineIntersections(lassoPolygon, sy);
+        for (let si = 0; si + 1 < intersections.length; si += 2) {
+            const xStart = intersections[si];
+            const xEnd = intersections[si + 1];
+            for (let sx = Math.ceil(xStart / fineSpacing) * fineSpacing; sx <= xEnd; sx += fineSpacing) {
+                if (objects.length >= maxObjects) break;
+                if (isPointCoveredSpatial(sx, sy)) continue;
+                if (!pointInPolygonInclusive({ x: sx, y: sy }, lassoPolygon)) continue;
+
+                // Try progressively smaller tiles
+                for (const sFrac of scaleSteps) {
+                    const tryScale = baseScale * sFrac;
+                    if (tryScale < fineMinScale) break;
+                    if (placeTile(sx, sy, tryScale, rotDeg)) {
+                        addToSpatialGrid(placedTiles[placedTiles.length - 1]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Inset a polygon by a fixed pixel amount (approximate via offsetting vertices along averaged normals)
+function insetPolygonByAmount(polygon, amount) {
+    if (!polygon || polygon.length < 3) return polygon;
+    const n = polygon.length;
+    const result = [];
+
+    for (let i = 0; i < n; i++) {
+        const prev = polygon[(i - 1 + n) % n];
+        const curr = polygon[i];
+        const next = polygon[(i + 1) % n];
+
+        // Edge normals (pointing inward for CW polygon, we'll check)
+        const e1x = curr.x - prev.x;
+        const e1y = curr.y - prev.y;
+        const e1Len = Math.hypot(e1x, e1y) || 1;
+        const n1x = -e1y / e1Len;
+        const n1y = e1x / e1Len;
+
+        const e2x = next.x - curr.x;
+        const e2y = next.y - curr.y;
+        const e2Len = Math.hypot(e2x, e2y) || 1;
+        const n2x = -e2y / e2Len;
+        const n2y = e2x / e2Len;
+
+        // Average normal
+        let avgNx = n1x + n2x;
+        let avgNy = n1y + n2y;
+        const avgLen = Math.hypot(avgNx, avgNy);
+        if (avgLen < 1e-9) {
+            avgNx = n1x;
+            avgNy = n1y;
+        } else {
+            avgNx /= avgLen;
+            avgNy /= avgLen;
+        }
+
+        // Determine which direction is inward by testing
+        const testInward = { x: curr.x + avgNx * 2, y: curr.y + avgNy * 2 };
+        const testOutward = { x: curr.x - avgNx * 2, y: curr.y - avgNy * 2 };
+
+        let inwardNx = avgNx;
+        let inwardNy = avgNy;
+        if (pointInPolygon(testOutward, polygon) && !pointInPolygon(testInward, polygon)) {
+            inwardNx = -avgNx;
+            inwardNy = -avgNy;
+        }
+
+        result.push({
+            x: curr.x + inwardNx * amount,
+            y: curr.y + inwardNy * amount
+        });
+    }
+
+    return result;
 }
 
 function forEachTileCell(targetGridX, targetGridY, squareMode, callback) {
