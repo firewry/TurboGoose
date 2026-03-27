@@ -183,6 +183,7 @@ async function loadObjectConfigs() {
             });
         });
         
+        if (typeof loadProgress === 'function') loadProgress();
         draw(); // draw once configs are ready
     } catch (e) {
         console.error("Failed to load objects.json", e);
@@ -292,13 +293,37 @@ function markUndoDirty() {
     if (pendingUndoSnapshot) pendingUndoDirty = true;
 }
 
+let saveTimeout;
+function saveProgress() {
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+        try {
+            if (isRestoringUndo) return;
+            const snap = createSnapshot();
+            localStorage.setItem('turbogoose_save', JSON.stringify(snap));
+        } catch (e) {}
+    }, 250);
+}
+
+function loadProgress() {
+    try {
+        const saved = localStorage.getItem('turbogoose_save');
+        if (saved) {
+            const snap = JSON.parse(saved);
+            restoreSnapshot(snap);
+        }
+    } catch(e) { }
+}
+
 function endUndoBatch() {
     if (!pendingUndoSnapshot) return;
+    const wasDirty = pendingUndoDirty;
     if (pendingUndoDirty) {
         pushUndoSnapshot(pendingUndoSnapshot);
     }
     pendingUndoSnapshot = null;
     pendingUndoDirty = false;
+    if (wasDirty) saveProgress();
 }
 
 function runUndoableAction(actionFn) {
@@ -311,6 +336,7 @@ function runUndoableAction(actionFn) {
     const after = createSnapshot();
     if (!snapshotsEqual(before, after)) {
         pushUndoSnapshot(before);
+        saveProgress();
     }
 }
 
@@ -319,6 +345,7 @@ function performUndo() {
     if (undoStack.length === 0) return;
     const snapshot = undoStack.pop();
     restoreSnapshot(snapshot);
+    saveProgress();
 }
 
 function applyLevelConfigFromData(data) {
@@ -1743,6 +1770,7 @@ const togglePanelBtn = document.getElementById('toggle-panel');
 const rightPanel = document.getElementById('right-panel');
 const undoBtn = document.getElementById('undo-btn');
 const exportBtn = document.getElementById('export-btn');
+const clearBtn = document.getElementById('clear-btn');
 
 // Toggle panel
 togglePanelBtn.addEventListener('click', () => {
@@ -1753,6 +1781,20 @@ togglePanelBtn.addEventListener('click', () => {
 if (undoBtn) {
     undoBtn.addEventListener('click', () => {
         performUndo();
+    });
+}
+
+if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+        if (confirm("Are you sure you want to completely clear the level?")) {
+            runUndoableAction(() => {
+                objects = [];
+                selectedObjects = [];
+                birdStart = { x: 100, y: 300 };
+                finishLineObj = { type: 'finishLine', x: 1200, y: 0 };
+                draw();
+            });
+        }
     });
 }
 
