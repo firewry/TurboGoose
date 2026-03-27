@@ -322,18 +322,6 @@
     "tileWidthMod": 1,
     "tileHeightMod": 1
   },
-  "bounce": {
-    "name": "Bounce Potion",
-    "icon": "assets/Not added yet/bounce_potion.webp",
-    "sprite": "assets/Not added yet/bounce_potion.webp",
-    "category": "consumables",
-    "width": 48,
-    "heightMode": "aspect",
-    "colorable": false,
-    "fallbackColor": "#88ddff",
-    "tileWidthMod": 1,
-    "tileHeightMod": 1
-  },
   "lightWeight": {
     "name": "Feather",
     "icon": "assets/Not added yet/feather.webp",
