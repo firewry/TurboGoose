@@ -1,8 +1,119 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
 const editorContainer = document.getElementById('editor-container');
 const propPanel = document.getElementById('properties-panel');
 const propColorInput = document.getElementById('prop-blockColor');
+const propColorRow = document.getElementById('prop-color-row');
+const propFieldsContainer = document.getElementById('properties-fields');
+
+const toolPropertyOverrides = {};
+const BASE_OBJECT_PROPERTY_DEFS = [
+    { key: 'collison', label: 'Collison', type: 'checkbox', default: true }
+];
+
+const OBJECT_PROPERTY_DEFS = {
+    catBullet: [
+        { key: 'sp', label: 'Bullet Speed', type: 'number', default: 4, step: 0.01 }
+    ],
+    thwomp: [
+        { key: 'uS', label: 'Up Speed', type: 'number', default: 91, step: 0.01 },
+        { key: 'dS', label: 'Down Speed', type: 'number', default: 121, step: 0.01 },
+        { key: 'mR', label: 'Move Range', type: 'number', default: 140, step: 0.01 },
+        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 4400, step: 1 },
+        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 3500, step: 1 },
+        { key: 'direction', label: 'Direction', type: 'select', default: 'down', options: ['up', 'down'] },
+        { key: 'st', label: 'State', type: 'select', default: 'moving_down', options: ['moving_down', 'moving_up', 'waiting_top', 'waiting_bottom'] }
+    ],
+    thwompPipe: [
+        { key: 'uS', label: 'Up Speed', type: 'number', default: 91, step: 0.01 },
+        { key: 'dS', label: 'Down Speed', type: 'number', default: 121, step: 0.01 },
+        { key: 'mR', label: 'Move Range', type: 'number', default: 140, step: 0.01 },
+        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 4400, step: 1 },
+        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 3500, step: 1 },
+        { key: 'direction', label: 'Direction', type: 'select', default: 'down', options: ['up', 'down'] },
+        { key: 'st', label: 'State', type: 'select', default: 'moving_down', options: ['moving_down', 'moving_up', 'waiting_top', 'waiting_bottom'] }
+    ],
+    tinyMushroom: [
+        { key: 'sF', label: 'Scale Factor', type: 'number', default: 0.5, step: 0.01 }
+    ],
+    bigMushroom: [
+        { key: 'gF', label: 'Growth Factor', type: 'number', default: 2, step: 0.01 }
+    ],
+    invincibilityStar: [
+        { key: 'invincibilityDuration', label: 'Duration (s)', type: 'number', default: 5, step: 0.1 }
+    ],
+    invulnerabilityStar: [
+        { key: 'invincibilityDuration', label: 'Duration (s)', type: 'number', default: 9.5, step: 0.1 }
+    ],
+    heavyWeight: [
+        { key: 'wI', label: 'Weight Increase', type: 'number', default: 1.43, step: 0.01 }
+    ],
+    lightWeight: [
+        { key: 'wD', label: 'Weight Decrease', type: 'number', default: 0.95, step: 0.01 }
+    ],
+    speedRing: [
+        { key: 'sB', label: 'Speed Boost', type: 'number', default: 5, step: 0.01 },
+        { key: 'sbD', label: 'Boost Duration (s)', type: 'number', default: 0.3, step: 0.01 }
+    ],
+    groundJuice: [
+        { key: 'duration', label: 'Duration (s)', type: 'number', default: 30, step: 0.1 },
+        { key: 'jumpForce', label: 'Jump Force', type: 'number', default: -8, step: 0.1 }
+    ],
+    bounceBlock: [
+        { key: 'bF', label: 'Bounce Force', type: 'number', default: 10, step: 0.01 }
+    ],
+    bounceBlockA: [
+        { key: 'bF', label: 'Bounce Force', type: 'number', default: 10, step: 0.01 }
+    ],
+    bounceBlockB: [
+        { key: 'bF', label: 'Bounce Force', type: 'number', default: 10, step: 0.01 }
+    ],
+    bounceBlockD: [
+        { key: 'bF', label: 'Bounce Force', type: 'number', default: 10, step: 0.01 }
+    ]
+};
+
+function getObjectPropertyDefs(type) {
+    if (!type || type === 'finishLine') return [];
+    return [...BASE_OBJECT_PROPERTY_DEFS, ...(OBJECT_PROPERTY_DEFS[type] || [])];
+}
+
+function getToolOverride(tool, key) {
+    if (!toolPropertyOverrides[tool]) return undefined;
+    return toolPropertyOverrides[tool][key];
+}
+
+function setToolOverride(tool, key, value) {
+    if (!toolPropertyOverrides[tool]) toolPropertyOverrides[tool] = {};
+    toolPropertyOverrides[tool][key] = value;
+}
+
+function getSignedScaleFromCollison(scale, collisonEnabled) {
+    const magnitude = Math.max(0.1, Math.abs(scale || 1));
+    return collisonEnabled ? magnitude : -magnitude;
+}
+
+function createPlacedObject(type, x, y, rotation, scale) {
+    const placed = {
+        type,
+        x: Number(x.toFixed(2)),
+        y: Number(y.toFixed(2)),
+        rotation,
+        s: scale,
+        color: (objectConfigs[type] && objectConfigs[type].colorable) ? levelConfig.lastUsedColor : undefined
+    };
+
+    const defs = getObjectPropertyDefs(type);
+    for (const def of defs) {
+        const override = getToolOverride(type, def.key);
+        placed[def.key] = override !== undefined ? override : def.default;
+    }
+
+    placed.s = getSignedScaleFromCollison(placed.s, placed.collison !== false);
+
+    return placed;
+}
 
 // Camera and scaling
 let camera = { x: 0, y: 0, zoom: 1.5 };
@@ -24,6 +135,7 @@ function drawTintedImage(ctx, img, color, x, y, width, height) {
     if (_tintCanvas.height !== Math.max(1, height)) _tintCanvas.height = height;
 
     _tintCtx.clearRect(0, 0, width, height);
+    _tintCtx.imageSmoothingEnabled = false;
     _tintCtx.drawImage(img, 0, 0, width, height);
 
     _tintCtx.globalCompositeOperation = 'multiply';
@@ -872,7 +984,7 @@ function getTilingMetrics(tool) {
     }
     const hasTool = tool !== 'none' && objectConfigs[tool];
     const dims = hasTool ? getToolDimensions(tool) : { w: SPIKE_WIDTH, h: SPIKE_WIDTH };
-    const scale = hasTool ? previewScale : 1;
+    const scale = hasTool ? Math.abs(previewScale || 1) : 1;
     const rad = (hasTool ? previewRotation : 0) * Math.PI / 180;
     return { dims, scale, rad };
 }
@@ -880,14 +992,14 @@ function getTilingMetrics(tool) {
 function getDeleteTilingMetrics() {
     const hasTool = deleteBrushTool !== 'none' && objectConfigs[deleteBrushTool];
     const dims = hasTool ? getToolDimensions(deleteBrushTool) : { w: SPIKE_WIDTH, h: SPIKE_WIDTH };
-    const scale = hasTool ? deleteBrushScale : 1;
+    const scale = hasTool ? Math.abs(deleteBrushScale || 1) : 1;
     return { dims, scale };
 }
 
 function getObjectBounds(obj) {
     const config = objectConfigs[obj.type];
     const dims = config ? getToolDimensions(obj.type) : { w: SPIKE_WIDTH, h: SPIKE_WIDTH };
-    const scale = obj.s || 1;
+    const scale = Math.abs(obj.s || 1);
     const halfW = (dims.w * scale) / 2;
     const halfH = (dims.h * scale) / 2;
     return {
@@ -1310,7 +1422,7 @@ function fillLassoWithCurrentTool() {
     if (!objectConfigs[currentTool]) return;
 
     const dims = getToolDimensions(currentTool);
-    const baseScale = previewScale || 1;
+    const baseScale = Math.abs(previewScale || 1);
     const tileW = Math.max(1, dims.w * baseScale);
     const tileH = Math.max(1, dims.h * baseScale);
     const rotDeg = previewRotation || 0;
@@ -1335,14 +1447,7 @@ function fillLassoWithCurrentTool() {
         // Verify ALL sample points of the rotated rect are inside the polygon
         if (!isRotatedRectInsidePolygon(cx, cy, w, h, rot, checkPolygon)) return false;
 
-        objects.push({
-            type: currentTool,
-            x: Number(cx.toFixed(2)),
-            y: Number(cy.toFixed(2)),
-            rotation: Number(rot.toFixed(2)),
-            s: s,
-            color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
-        });
+        objects.push(createPlacedObject(currentTool, cx, cy, Number(rot.toFixed(2)), s));
         placedTiles.push({ x: cx, y: cy, w, h, rot });
         markUndoDirty();
         return true;
@@ -1712,14 +1817,7 @@ function updateSquarePlacement(gridX, gridY, cellW, cellH, rad) {
 }
 
 function placeObjectAtWorld(x, y) {
-    const obj = {
-        type: currentTool,
-        x: Number(x.toFixed(2)),
-        y: Number(y.toFixed(2)),
-        rotation: previewRotation,
-        s: previewScale,
-        color: (objectConfigs[currentTool] && objectConfigs[currentTool].colorable) ? levelConfig.lastUsedColor : undefined
-    };
+    const obj = createPlacedObject(currentTool, x, y, previewRotation, previewScale);
     objects.push(obj);
     markUndoDirty();
     return obj;
@@ -1978,8 +2076,8 @@ canvas.addEventListener('mousedown', (e) => {
                 activeGrid = {
                     cx: clickedObj.x,
                     cy: clickedObj.y,
-                    w: Math.max(1, dims.w * (clickedObj.s || 1)),
-                    h: Math.max(1, dims.h * (clickedObj.s || 1)),
+                    w: Math.max(1, dims.w * Math.abs(clickedObj.s || 1)),
+                    h: Math.max(1, dims.h * Math.abs(clickedObj.s || 1)),
                     rotation: clickedObj.rotation || 0
                 };
                 draw();
@@ -2345,20 +2443,50 @@ canvas.addEventListener('wheel', (e) => {
     // Alt + Scroll to scale the preview / selected objects
     if (e.altKey) {
         const scaleSpeed = 0.1;
-        const amount = e.deltaY > 0 ? -scaleSpeed : scaleSpeed;
+        const factor = e.deltaY > 0 ? (1 - scaleSpeed) : (1 + scaleSpeed);
 
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
+                let cx = 0;
+                let cy = 0;
+                let count = 0;
+
                 selectedObjects.forEach(obj => {
                     if (obj.type === 'finishLine') return;
-                    obj.s = Math.max(0.1, (obj.s || 1) + amount);
+                    cx += obj.x;
+                    cy += obj.y;
+                    count++;
+                });
+
+                if (count === 0) {
+                    draw();
+                    return;
+                }
+
+                cx /= count;
+                cy /= count;
+
+                selectedObjects.forEach(obj => {
+                    if (obj.type === 'finishLine') return;
+
+                    const dx = obj.x - cx;
+                    const dy = obj.y - cy;
+                    obj.x = Number((cx + dx * factor).toFixed(2));
+                    obj.y = Number((cy + dy * factor).toFixed(2));
+
+                    const collisonEnabled = obj.collison !== false;
+                    const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
+                    const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
+                    obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
                     obj.s = Number(obj.s.toFixed(2));
                 });
                 draw();
             });
         } else if (currentTool !== 'none') {
             runUndoableAction(() => {
-                previewScale = Math.max(0.1, previewScale + amount);
+                const collisonEnabled = getToolOverride(currentTool, 'collison') !== false;
+                const nextMagnitude = Math.max(0.1, Math.abs(previewScale || 1) * factor);
+                previewScale = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
                 previewScale = Number(previewScale.toFixed(2));
                 draw();
             });
@@ -2439,7 +2567,7 @@ function getObjectAt(x, y) {
 function getObjectIndexAt(x, y) {
     for (let i = objects.length - 1; i >= 0; i--) {
         const obj = objects[i];
-        const scale = obj.s || 1;
+        const scale = Math.abs(obj.s || 1);
         const hitRadius = 20 * scale;
         if (Math.abs(obj.x - x) < hitRadius && Math.abs(obj.y - y) < hitRadius) {
             return i;
@@ -2451,6 +2579,7 @@ function getObjectIndexAt(x, y) {
 // Drawing
 function draw() {
     try {
+        ctx.imageSmoothingEnabled = false;
         ctx.clearRect(0, 0, width, height);
 
         ctx.save();
@@ -2521,8 +2650,10 @@ function draw() {
 
             if (selectedObjects.includes(obj)) {
                 ctx.strokeStyle = config.highlight || '#00ffcc';
-                ctx.lineWidth = 3 / camera.zoom;
-                ctx.strokeRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4);
+                const zoomComp = Math.max(1, camera.zoom);
+                const outlinePad = 1.65 / zoomComp;
+                ctx.lineWidth = 1.9 / zoomComp;
+                ctx.strokeRect(-w / 2 - outlinePad, -h / 2 - outlinePad, w + outlinePad * 2, h + outlinePad * 2);
             }
             ctx.restore();
         }
@@ -2945,18 +3076,33 @@ exportBtn.addEventListener('click', () => {
 
     for (const obj of objects) {
         if (BULLET_TOOL_TYPES.has(obj.type)) {
-            bullets.push({
+            const exportedBullet = {
                 x: obj.x,
                 y: obj.y,
-                a: Number((((obj.rotation || 0) * Math.PI) / 180).toFixed(3))
-            });
+                a: Number((((obj.rotation || 0) * Math.PI) / 180).toFixed(3)),
+                collison: obj.collison !== false
+            };
+
+            if (typeof obj.sp === 'number') {
+                exportedBullet.sp = obj.sp;
+            }
+
+            for (const [key, value] of Object.entries(obj)) {
+                if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'a') continue;
+                if (value === undefined) continue;
+                if (key in exportedBullet) continue;
+                exportedBullet[key] = value;
+            }
+
+            bullets.push(exportedBullet);
             continue;
         }
 
         const exportedObj = {
             type: obj.type,
             x: obj.x,
-            y: obj.y
+            y: obj.y,
+            collison: obj.collison !== false
         };
         if (obj.rotation) {
             // Convert degrees to radians and round to 3 decimal places
@@ -2965,8 +3111,10 @@ exportBtn.addEventListener('click', () => {
         if (obj.s && obj.s !== 1) {
             exportedObj.s = obj.s;
         }
-        if (obj.color) {
-            exportedObj.color = obj.color;
+        for (const [key, value] of Object.entries(obj)) {
+            if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's') continue;
+            if (value === undefined) continue;
+            exportedObj[key] = value;
         }
         genericObjects.push(exportedObj);
     }
@@ -2988,6 +3136,7 @@ exportBtn.addEventListener('click', () => {
         birdStartY: birdStart.y,
         pipes: [],
         bullets,
+        bulletTriggers: [],
         layers: { currentLayer: 1, maxLayers: 3 },
         genericObjects,
         finishLineX: finishLineObj.x,
@@ -3002,25 +3151,149 @@ exportBtn.addEventListener('click', () => {
 
 // Properties Panel Logic
 
-function updatePropertiesPanel() {
-    const isPlacing = currentTool !== 'none' && objectConfigs[currentTool] && objectConfigs[currentTool].colorable;
-    const firstColorObj = selectedObjects.find(obj => objectConfigs[obj.type] && objectConfigs[obj.type].colorable);
-    const isSelectingColorItem = !!firstColorObj;
+var propFieldsSignature = '';
 
-    if (isPlacing || isSelectingColorItem) {
-        propPanel.classList.remove('closed');
-        
-        // Update color preview without disrupting active user input
-        if (document.activeElement !== propColorInput) {
-            if (isSelectingColorItem) {
-                propColorInput.value = firstColorObj.color || levelConfig.lastUsedColor;
-            } else {
-                propColorInput.value = levelConfig.lastUsedColor;
+function getPropertyPanelContext() {
+    if (currentTool !== 'none' && objectConfigs[currentTool]) {
+        return { mode: 'placing', tool: currentTool };
+    }
+    if (selectedObjects.length > 0) {
+        return { mode: 'selected' };
+    }
+    return { mode: 'none' };
+}
+
+function getVisiblePropertyDefs(context) {
+    if (context.mode === 'placing') {
+        return getObjectPropertyDefs(context.tool);
+    }
+
+    if (context.mode === 'selected') {
+        const map = new Map();
+        for (const obj of selectedObjects) {
+            for (const def of getObjectPropertyDefs(obj.type)) {
+                if (!map.has(def.key)) map.set(def.key, def);
             }
         }
-    } else {
-        propPanel.classList.add('closed');
+        return Array.from(map.values());
     }
+
+    return [];
+}
+
+function getDefForObjectKey(type, key) {
+    return getObjectPropertyDefs(type).find(def => def.key === key) || null;
+}
+
+function parsePropertyInputValue(def, rawValue) {
+    if (def.type === 'checkbox') {
+        return !!rawValue;
+    }
+    if (def.type === 'number') {
+        const parsed = Number(rawValue);
+        if (!Number.isFinite(parsed)) return def.default;
+        return parsed;
+    }
+    return rawValue;
+}
+
+function getContextPropertyValue(context, def) {
+    if (context.mode === 'placing') {
+        const override = getToolOverride(context.tool, def.key);
+        return override !== undefined ? override : def.default;
+    }
+
+    if (context.mode === 'selected') {
+        const withProperty = selectedObjects.filter(obj => !!getDefForObjectKey(obj.type, def.key));
+        if (withProperty.length === 0) return def.default;
+        const firstObj = withProperty[0];
+        return firstObj[def.key] !== undefined ? firstObj[def.key] : def.default;
+    }
+
+    return def.default;
+}
+
+function renderPropertyInputs(context, defs) {
+    const signature = `${context.mode}|${context.tool || ''}|${defs.map(def => `${def.key}:${def.type}`).join('|')}`;
+    if (signature === propFieldsSignature) return;
+
+    propFieldsSignature = signature;
+    propFieldsContainer.innerHTML = '';
+
+    for (const def of defs) {
+        const label = document.createElement('label');
+        label.textContent = `${def.label}:`;
+
+        let input;
+        if (def.type === 'select') {
+            input = document.createElement('select');
+            for (const optionValue of def.options || []) {
+                const option = document.createElement('option');
+                option.value = optionValue;
+                option.textContent = optionValue;
+                input.appendChild(option);
+            }
+        } else if (def.type === 'checkbox') {
+            input = document.createElement('input');
+            input.type = 'checkbox';
+        } else {
+            input = document.createElement('input');
+            input.type = 'number';
+            input.step = def.step !== undefined ? String(def.step) : 'any';
+        }
+
+        input.dataset.propKey = def.key;
+        input.dataset.propType = def.type;
+        label.appendChild(input);
+        propFieldsContainer.appendChild(label);
+    }
+}
+
+function updatePropertyInputValues(context, defs) {
+    for (const def of defs) {
+        const input = propFieldsContainer.querySelector(`[data-prop-key="${def.key}"]`);
+        if (!input || document.activeElement === input) continue;
+        const value = getContextPropertyValue(context, def);
+        if (def.type === 'checkbox') {
+            input.checked = value !== false;
+        } else {
+            input.value = value ?? '';
+        }
+    }
+}
+
+function updatePropertiesPanel() {
+    const context = getPropertyPanelContext();
+    const defs = getVisiblePropertyDefs(context);
+    const isPlacingColor = context.mode === 'placing' && objectConfigs[context.tool] && objectConfigs[context.tool].colorable;
+    const firstColorObj = selectedObjects.find(obj => objectConfigs[obj.type] && objectConfigs[obj.type].colorable);
+    const isSelectingColorItem = !!firstColorObj;
+    const hasAnyProps = defs.length > 0;
+
+    if (!isPlacingColor && !isSelectingColorItem && !hasAnyProps) {
+        propPanel.classList.add('closed');
+        propFieldsContainer.innerHTML = '';
+        propFieldsSignature = '';
+        return;
+    }
+
+    propPanel.classList.remove('closed');
+
+    if (propColorRow) {
+        propColorRow.style.display = (isPlacingColor || isSelectingColorItem) ? 'flex' : 'none';
+    }
+
+    // Update color preview without disrupting active user input
+    if ((isPlacingColor || isSelectingColorItem) && document.activeElement !== propColorInput) {
+        if (isSelectingColorItem) {
+            propColorInput.value = firstColorObj.color || levelConfig.lastUsedColor;
+        } else {
+            propColorInput.value = levelConfig.lastUsedColor;
+        }
+    }
+
+    renderPropertyInputs(context, defs);
+    updatePropertyInputValues(context, defs);
 }
 
 // Ensure the panel handles color changes dynamically
@@ -3043,6 +3316,44 @@ propColorInput.addEventListener('input', (e) => {
         
         if (changed) {
             draw();
+        }
+    });
+});
+
+propFieldsContainer.addEventListener('input', (e) => {
+    const target = e.target;
+    const key = target.dataset ? target.dataset.propKey : null;
+    if (!key) return;
+
+    const context = getPropertyPanelContext();
+    const defs = getVisiblePropertyDefs(context);
+    const def = defs.find(item => item.key === key);
+    if (!def) return;
+
+    const rawValue = def.type === 'checkbox' ? target.checked : target.value;
+    const newValue = parsePropertyInputValue(def, rawValue);
+
+    runUndoableAction(() => {
+        if (context.mode === 'placing') {
+            setToolOverride(context.tool, key, newValue);
+            if (key === 'collison') {
+                previewScale = getSignedScaleFromCollison(previewScale || 1, newValue !== false);
+            }
+            draw();
+            return;
+        }
+
+        if (context.mode === 'selected') {
+            let changed = false;
+            for (const obj of selectedObjects) {
+                if (!getDefForObjectKey(obj.type, key)) continue;
+                obj[key] = newValue;
+                if (key === 'collison') {
+                    obj.s = getSignedScaleFromCollison(obj.s || 1, newValue !== false);
+                }
+                changed = true;
+            }
+            if (changed) draw();
         }
     });
 });
