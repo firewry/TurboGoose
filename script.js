@@ -370,6 +370,40 @@ let isDrawingBrush = false;
 let brushDraftPoints = [];
 let brushRadius = 30; // default radius
 
+// Grid Tool State
+let activeGrid = null; // null or { cx, cy, w, h, rotation }
+
+function applyGridSnap(x, y) {
+    if (!activeGrid) return { x, y };
+    
+    // Project point into grid space
+    const rad = -activeGrid.rotation * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    
+    // Vector from grid center to point
+    const dx = x - activeGrid.cx;
+    const dy = y - activeGrid.cy;
+    
+    // Rotate vector to grid space
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+    
+    // Snap to grid intervals (width and height of the reference object)
+    const snappedLocalX = Math.round(localX / activeGrid.w) * activeGrid.w;
+    const snappedLocalY = Math.round(localY / activeGrid.h) * activeGrid.h;
+    
+    // Rotate back to world space
+    const invRad = activeGrid.rotation * Math.PI / 180;
+    const invCos = Math.cos(invRad);
+    const invSin = Math.sin(invRad);
+    
+    const snappedX = activeGrid.cx + snappedLocalX * invCos - snappedLocalY * invSin;
+    const snappedY = activeGrid.cy + snappedLocalX * invSin + snappedLocalY * invCos;
+    
+    return { x: snappedX, y: snappedY };
+}
+
 function combineBrushWithLasso() {
     if (brushDraftPoints.length === 0) return;
 
@@ -984,7 +1018,7 @@ function polygonRectOverlap(polygon, rect) {
 
 function canPreviewLassoFillAt(x, y) {
     if (!lassoPolygon || lassoPolygon.length < 3) return false;
-    if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text' || currentTool === 'brush') return false;
+    if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text' || currentTool === 'brush' || currentTool === 'grid') return false;
     if (!objectConfigs[currentTool]) return false;
     return pointInPolygon({ x, y }, lassoPolygon);
 }
@@ -1870,10 +1904,33 @@ canvas.addEventListener('mousedown', (e) => {
 
     const rect = canvas.getBoundingClientRect();
     // Convert screen coordinates to game world coordinates
-    const gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
-    const gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
+    let gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
+    let gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
+
+    // Apply grid snap
+    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text') {
+        const snapped = applyGridSnap(gameX, gameY);
+        gameX = snapped.x;
+        gameY = snapped.y;
+    }
 
     if (e.button === 0) { // Left click
+        if (currentTool === 'grid') {
+            const clickedObj = getObjectAt(gameX, gameY);
+            if (clickedObj && clickedObj.type !== 'finishLine' && objectConfigs[clickedObj.type]) {
+                const dims = getToolDimensions(clickedObj.type);
+                activeGrid = {
+                    cx: clickedObj.x,
+                    cy: clickedObj.y,
+                    w: Math.max(1, dims.w * (clickedObj.s || 1)),
+                    h: Math.max(1, dims.h * (clickedObj.s || 1)),
+                    rotation: clickedObj.rotation || 0
+                };
+                draw();
+            }
+            return;
+        }
+
         // Text tool handling
         if (currentTool === 'text') {
             if (textToolState === 'editing' && isPointOnResizeHandle(gameX, gameY, camera.zoom)) {
@@ -1987,6 +2044,12 @@ canvas.addEventListener('mousedown', (e) => {
             draw();
         }
     } else if (e.button === 2) { // Right click
+        if (currentTool === 'grid') {
+            activeGrid = null;
+            draw();
+            return;
+        }
+
         beginUndoBatch();
         const clickedObj = getObjectAt(gameX, gameY);
         const clickedObjIsGeneric = clickedObj && clickedObj.type !== 'finishLine' && objectConfigs[clickedObj.type];
@@ -2029,8 +2092,15 @@ canvas.addEventListener('mousemove', (e) => {
     }
     
     // Convert screen coordinates to game world coordinates
-    const gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
-    const gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
+    let gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
+    let gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
+
+    // Apply grid snap
+    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text') {
+        const snapped = applyGridSnap(gameX, gameY);
+        gameX = snapped.x;
+        gameY = snapped.y;
+    }
 
     if (isResizingText) {
         const dist = Math.hypot(gameX - textToolPosition.x, gameY - textToolPosition.y);
@@ -2545,6 +2615,87 @@ function draw() {
         }
         if (brushDraftPoints.length === 1) {
             ctx.lineTo(brushDraftPoints[0].x + 0.1, brushDraftPoints[0].y);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    if (isDrawingBrush && brushDraftPoints.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 209, 102, 0.5)';
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.2)';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = brushRadius * 2;
+        
+        ctx.beginPath();
+        ctx.moveTo(brushDraftPoints[0].x, brushDraftPoints[0].y);
+        for (let i = 1; i < brushDraftPoints.length; i++) {
+            ctx.lineTo(brushDraftPoints[i].x, brushDraftPoints[i].y);
+        }
+        if (brushDraftPoints.length === 1) {
+            ctx.lineTo(brushDraftPoints[0].x + 0.1, brushDraftPoints[0].y);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // Draw Active Grid
+    if (activeGrid) {
+        ctx.save();
+        ctx.translate(activeGrid.cx, activeGrid.cy);
+        ctx.rotate(activeGrid.rotation * Math.PI / 180);
+        
+        ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+        ctx.lineWidth = 1.5 / camera.zoom;
+        ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
+        
+        const viewStartX = -camera.x / camera.zoom;
+        const viewEndX = (-camera.x + canvas.width) / camera.zoom;
+        const viewStartY = -camera.y / camera.zoom;
+        const viewEndY = (-camera.y + canvas.height) / camera.zoom;
+        
+        const rad = -activeGrid.rotation * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        
+        const corners = [
+            { x: viewStartX, y: viewStartY },
+            { x: viewEndX, y: viewStartY },
+            { x: viewEndX, y: viewEndY },
+            { x: viewStartX, y: viewEndY }
+        ];
+        
+        let minLX = Infinity, maxLX = -Infinity, minLY = Infinity, maxLY = -Infinity;
+        corners.forEach(c => {
+            const dx = c.x - activeGrid.cx;
+            const dy = c.y - activeGrid.cy;
+            const lx = dx * cos - dy * sin;
+            const ly = dx * sin + dy * cos;
+            if (lx < minLX) minLX = lx;
+            if (lx > maxLX) maxLX = lx;
+            if (ly < minLY) minLY = ly;
+            if (ly > maxLY) maxLY = ly;
+        });
+
+        // Snap visible bounds to grid intervals
+        minLX = Math.floor(minLX / activeGrid.w) * activeGrid.w;
+        maxLX = Math.ceil(maxLX / activeGrid.w) * activeGrid.w;
+        minLY = Math.floor(minLY / activeGrid.h) * activeGrid.h;
+        maxLY = Math.ceil(maxLY / activeGrid.h) * activeGrid.h;
+
+        // Hard limit on line count
+        if (maxLX - minLX > 1000 * activeGrid.w) maxLX = minLX + 1000 * activeGrid.w;
+        if (maxLY - minLY > 1000 * activeGrid.h) maxLY = minLY + 1000 * activeGrid.h;
+
+        ctx.beginPath();
+        for (let x = minLX; x <= maxLX; x += activeGrid.w) {
+            ctx.moveTo(x, minLY);
+            ctx.lineTo(x, maxLY);
+        }
+        for (let y = minLY; y <= maxLY; y += activeGrid.h) {
+            ctx.moveTo(minLX, y);
+            ctx.lineTo(maxLX, y);
         }
         ctx.stroke();
         ctx.restore();
