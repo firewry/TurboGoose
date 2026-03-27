@@ -373,6 +373,8 @@ let isResizingText = false;
 let textResizeStartDist = 0;
 let textResizeStartSize = 0;
 let textBlinkTimer = null;
+let isMovingText = false;
+let textMoveStartOffset = { x: 0, y: 0 };
 
 const TEXT_HANDLE_RADIUS = 8; // radius of resize handle in screen px
 const TEXT_MIN_FONT_SIZE = 10;
@@ -408,6 +410,13 @@ function isPointOnResizeHandle(worldX, worldY, zoomLevel) {
     const dx = worldX - handle.x;
     const dy = worldY - handle.y;
     return (dx * dx + dy * dy) <= radius * radius;
+}
+
+function isPointOnTextTool(worldX, worldY) {
+    if (textToolState !== 'editing' && textToolState !== 'placed') return false;
+    if (!textToolContent) return false;
+    const bb = getTextBoundingBox();
+    return worldX >= bb.x && worldX <= bb.x + bb.w && worldY >= bb.y && worldY <= bb.y + bb.h;
 }
 
 // Convert text to polygon using offscreen canvas + contour tracing
@@ -450,34 +459,43 @@ function textToPolygon() {
     const contours = extractContours(grid, textW, textH);
     if (contours.length === 0) return [];
 
-    // Find the largest contour (outer boundary)
-    let largest = contours[0];
-    for (let i = 1; i < contours.length; i++) {
-        if (contours[i].length > largest.length) {
-            largest = contours[i];
-        }
-    }
-
     // Transform contour points from pixel space to world space
     const { textW: worldTextW, textH: worldTextH } = getTextMetrics();
-    const scaleX = worldTextW / ((textW - 20) / RENDER_SCALE * RENDER_SCALE);
-    const scaleY = worldTextH / ((textH - 20) / RENDER_SCALE * RENDER_SCALE);
     const worldOriginX = textToolPosition.x - worldTextW / 2;
     const worldOriginY = textToolPosition.y - worldTextH;
 
-    // Scale from pixel coords to world coords
-    const pixToWorldX = (px) => worldOriginX + ((px - 10) / RENDER_SCALE) * (worldTextW / (metrics.width));
-    const pixToWorldY = (py) => worldOriginY + ((py - 10) / RENDER_SCALE) * (worldTextH / (fontSize * 1.1));
+    // Scale from pixel coords to world coords cleanly
+    const pixToWorldX = (px) => worldOriginX + (px - 10) / RENDER_SCALE;
+    const pixToWorldY = (py) => worldOriginY + (py - 10) / RENDER_SCALE;
 
-    const polygon = largest.map(p => ({
+    // Convert, simplify, and concatenate all contours
+    let allSimplified = contours.map(c => simplifyPolygon(c.map(p => ({
         x: pixToWorldX(p.x),
         y: pixToWorldY(p.y)
-    }));
+    })), 0.5));
 
-    // Simplify polygon to reduce point count (Douglas-Peucker)
-    const simplified = simplifyPolygon(polygon, 0.5);
+    if (allSimplified.length === 0) return [];
 
-    return simplified;
+    // Stitch all disconnected contours together into one continuous polygon using zero-width bridge segments
+    // This allows the single `lassoPolygon` state and fill algorithms to "see" multiple letters and inner holes 
+    // seamlessly, because connecting bridges effectively cross paths twice and have zero inner area.
+    const stitched = [];
+    const root = allSimplified[0][0];
+
+    for (let i = 0; i < allSimplified.length; i++) {
+        const poly = allSimplified[i];
+        if (i > 0) {
+            stitched.push(root);
+            stitched.push(poly[0]);
+        }
+        stitched.push(...poly);
+        stitched.push(poly[0]); // explicitly close this sub-loop
+        if (i > 0) {
+            stitched.push(root);
+        }
+    }
+
+    return stitched;
 }
 
 // Marching squares contour extraction
@@ -554,29 +572,29 @@ function traceContour(grid, width, height, startX, startY, visited) {
         let nextY = y;
 
         switch (cellType) {
-            case 1: nextY++; break;
-            case 2: nextX++; break;
-            case 3: nextX++; break;
-            case 4: nextX++; break;
-            case 5: // Saddle point
-                if (prevDir === 0) nextY++; else nextX--; break;
-            case 6: nextY--; break;
-            case 7: nextY--; break;
-            case 8: nextX--; break;
-            case 9: nextY++; break;
-            case 10: // Saddle point
-                if (prevDir === 1) nextX++; else nextY--; break;
-            case 11: nextY++; break;
-            case 12: nextY--; break;
-            case 13: nextX--; break;
-            case 14: nextX--; break;
-            default: nextX++; break;
+            case 1: nextX--; break; // BL: down to left
+            case 2: nextY++; break; // BR: right to down
+            case 3: nextX--; break; // BL, BR: right to left
+            case 4: nextX++; break; // TR: up to right
+            case 5: // BL, TR
+                if (prevDir === 2) nextX--; else nextX++; break;
+            case 6: nextY++; break; // BR, TR: up to down
+            case 7: nextX--; break; // BL, BR, TR: up to left
+            case 8: nextY--; break; // TL: left to up
+            case 9: nextY--; break; // TL, BL: down to up
+            case 10: // TL, BR
+                if (prevDir === 3) nextY--; else nextY++; break;
+            case 11: nextY--; break; // TL, BL, BR: right to up
+            case 12: nextX++; break; // TL, TR: left to right
+            case 13: nextX++; break; // TL, TR, BL: down to right
+            case 14: nextY++; break; // TL, TR, BR: left to down
+            default: break;
         }
 
-        if (nextX > x) prevDir = 0;
-        else if (nextX < x) prevDir = 1;
-        else if (nextY > y) prevDir = 2;
-        else prevDir = 3;
+        if (nextX > x) prevDir = 1;      // moved right
+        else if (nextX < x) prevDir = 3; // moved left
+        else if (nextY > y) prevDir = 2; // moved down
+        else prevDir = 0;                // moved up
 
         x = nextX;
         y = nextY;
@@ -636,6 +654,7 @@ function commitTextToLasso() {
         lassoPolygon = polygon;
         textToolState = 'idle';
         textToolContent = '';
+        isMovingText = false;
         if (textBlinkTimer) { clearInterval(textBlinkTimer); textBlinkTimer = null; }
         draw();
     }
@@ -645,6 +664,7 @@ function cancelTextTool() {
     textToolState = 'idle';
     textToolContent = '';
     isResizingText = false;
+    isMovingText = false;
     if (textBlinkTimer) { clearInterval(textBlinkTimer); textBlinkTimer = null; }
     draw();
 }
@@ -1739,6 +1759,12 @@ canvas.addEventListener('mousedown', (e) => {
                 draw();
                 return;
             }
+            if (textToolState === 'editing' && isPointOnTextTool(gameX, gameY)) {
+                // Clicking inside the body to move it
+                isMovingText = true;
+                textMoveStartOffset = { x: gameX - textToolPosition.x, y: gameY - textToolPosition.y };
+                return;
+            }
             if (textToolState === 'editing') {
                 // Clicking outside the text box commits
                 const bb = getTextBoundingBox();
@@ -1873,6 +1899,10 @@ canvas.addEventListener('mousemove', (e) => {
         const ratio = dist / (textResizeStartDist || 1);
         textToolFontSize = clamp(textResizeStartSize * ratio, TEXT_MIN_FONT_SIZE, TEXT_MAX_FONT_SIZE);
         draw();
+    } else if (isMovingText) {
+        textToolPosition.x = gameX - textMoveStartOffset.x;
+        textToolPosition.y = gameY - textMoveStartOffset.y;
+        draw();
     } else if (isDrawingLasso) {
         const nextPoint = { x: gameX, y: gameY };
         if (!lastLassoPoint || distanceBetweenPoints(lastLassoPoint, nextPoint) >= 6) {
@@ -1956,6 +1986,9 @@ canvas.addEventListener('mouseup', (e) => {
         if (isResizingText) {
             isResizingText = false;
             draw();
+        }
+        if (isMovingText) {
+            isMovingText = false;
         }
         if (isDrawingLasso) {
             isDrawingLasso = false;
