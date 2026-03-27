@@ -175,6 +175,7 @@ async function loadObjectConfigs() {
                 currentTool = btn.dataset.tool;
                 previewRotation = 0;
                 previewScale = 1;
+                if (textToolState !== 'idle') cancelTextTool();
                 if (typeof updatePropertiesPanel === 'function') updatePropertiesPanel();
                 draw();
             });
@@ -361,6 +362,292 @@ let isDrawingLasso = false;
 let lassoDraftPoints = [];
 let lassoPolygon = [];
 let lastLassoPoint = null;
+
+// Text Tool State
+let textToolState = 'idle'; // 'idle', 'editing', 'placed'
+let textToolPosition = { x: 0, y: 0 }; // world position of text anchor (center-bottom)
+let textToolContent = '';
+let textToolFontSize = 80; // base font size in world units
+let textToolFont = 'Arial Black, Arial, sans-serif';
+let isResizingText = false;
+let textResizeStartDist = 0;
+let textResizeStartSize = 0;
+let textBlinkTimer = null;
+
+const TEXT_HANDLE_RADIUS = 8; // radius of resize handle in screen px
+const TEXT_MIN_FONT_SIZE = 10;
+const TEXT_MAX_FONT_SIZE = 800;
+
+function getTextMetrics() {
+    const offCtx = document.createElement('canvas').getContext('2d');
+    offCtx.font = `bold ${textToolFontSize}px ${textToolFont}`;
+    const m = offCtx.measureText(textToolContent || 'A');
+    const textW = m.width;
+    const textH = textToolFontSize * 1.1;
+    return { textW, textH };
+}
+
+function getTextBoundingBox() {
+    const { textW, textH } = getTextMetrics();
+    const x = textToolPosition.x - textW / 2;
+    const y = textToolPosition.y - textH;
+    return { x, y, w: textW, h: textH };
+}
+
+function getTextResizeHandle() {
+    const bb = getTextBoundingBox();
+    // Bottom-right corner
+    return { x: bb.x + bb.w, y: bb.y + bb.h };
+}
+
+function isPointOnResizeHandle(worldX, worldY, zoomLevel) {
+    if (textToolState !== 'editing' && textToolState !== 'placed') return false;
+    if (!textToolContent) return false;
+    const handle = getTextResizeHandle();
+    const radius = TEXT_HANDLE_RADIUS / zoomLevel;
+    const dx = worldX - handle.x;
+    const dy = worldY - handle.y;
+    return (dx * dx + dy * dy) <= radius * radius;
+}
+
+// Convert text to polygon using offscreen canvas + contour tracing
+function textToPolygon() {
+    if (!textToolContent || textToolContent.trim() === '') return [];
+
+    // Render text to an offscreen canvas at high res
+    const RENDER_SCALE = 2; // render at 2x for better contour quality
+    const fontSize = textToolFontSize * RENDER_SCALE;
+    const offCanvas = document.createElement('canvas');
+    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+    offCtx.font = `bold ${fontSize}px ${textToolFont}`;
+    const metrics = offCtx.measureText(textToolContent);
+    const textW = Math.ceil(metrics.width) + 20;
+    const textH = Math.ceil(fontSize * 1.3) + 20;
+
+    offCanvas.width = textW;
+    offCanvas.height = textH;
+
+    // Clear and draw text
+    offCtx.clearRect(0, 0, textW, textH);
+    offCtx.fillStyle = '#ffffff';
+    offCtx.font = `bold ${fontSize}px ${textToolFont}`;
+    offCtx.textBaseline = 'top';
+    offCtx.fillText(textToolContent, 10, 10);
+
+    // Get pixel data
+    const imageData = offCtx.getImageData(0, 0, textW, textH);
+    const data = imageData.data;
+
+    // Create binary grid (1 = filled, 0 = empty) based on alpha
+    const ALPHA_THRESHOLD = 80;
+    const grid = new Uint8Array(textW * textH);
+    for (let i = 0; i < textW * textH; i++) {
+        grid[i] = data[i * 4 + 3] >= ALPHA_THRESHOLD ? 1 : 0;
+    }
+
+    // Extract contour using marching squares
+    const contours = extractContours(grid, textW, textH);
+    if (contours.length === 0) return [];
+
+    // Find the largest contour (outer boundary)
+    let largest = contours[0];
+    for (let i = 1; i < contours.length; i++) {
+        if (contours[i].length > largest.length) {
+            largest = contours[i];
+        }
+    }
+
+    // Transform contour points from pixel space to world space
+    const { textW: worldTextW, textH: worldTextH } = getTextMetrics();
+    const scaleX = worldTextW / ((textW - 20) / RENDER_SCALE * RENDER_SCALE);
+    const scaleY = worldTextH / ((textH - 20) / RENDER_SCALE * RENDER_SCALE);
+    const worldOriginX = textToolPosition.x - worldTextW / 2;
+    const worldOriginY = textToolPosition.y - worldTextH;
+
+    // Scale from pixel coords to world coords
+    const pixToWorldX = (px) => worldOriginX + ((px - 10) / RENDER_SCALE) * (worldTextW / (metrics.width));
+    const pixToWorldY = (py) => worldOriginY + ((py - 10) / RENDER_SCALE) * (worldTextH / (fontSize * 1.1));
+
+    const polygon = largest.map(p => ({
+        x: pixToWorldX(p.x),
+        y: pixToWorldY(p.y)
+    }));
+
+    // Simplify polygon to reduce point count (Douglas-Peucker)
+    const simplified = simplifyPolygon(polygon, 0.5);
+
+    return simplified;
+}
+
+// Marching squares contour extraction
+function extractContours(grid, width, height) {
+    const visited = new Uint8Array(width * height);
+    const contours = [];
+
+    // Find contour starting points (transitions from 0 to 1 horizontally)
+    for (let y = 0; y < height - 1; y++) {
+        for (let x = 0; x < width - 1; x++) {
+            const idx = y * width + x;
+            if (visited[idx]) continue;
+
+            // Check if this is a boundary cell
+            const tl = grid[idx];
+            const tr = grid[idx + 1];
+            const bl = grid[(y + 1) * width + x];
+            const br = grid[(y + 1) * width + x + 1];
+            const cellType = (tl << 3) | (tr << 2) | (br << 1) | bl;
+
+            if (cellType === 0 || cellType === 15) continue; // fully outside or fully inside
+
+            // Trace contour from this cell
+            const contour = traceContour(grid, width, height, x, y, visited);
+            if (contour && contour.length >= 6) {
+                contours.push(contour);
+            }
+        }
+    }
+
+    return contours;
+}
+
+function traceContour(grid, width, height, startX, startY, visited) {
+    const points = [];
+    let x = startX;
+    let y = startY;
+    let prevDir = -1; // direction we came from
+    const maxSteps = width * height;
+    let steps = 0;
+
+    do {
+        if (steps++ > maxSteps) break;
+
+        const idx = y * width + x;
+        if (x < 0 || x >= width - 1 || y < 0 || y >= height - 1) break;
+
+        visited[idx] = 1;
+
+        const tl = grid[idx];
+        const tr = grid[idx + 1];
+        const bl = grid[(y + 1) * width + x];
+        const br = grid[(y + 1) * width + x + 1];
+        const cellType = (tl << 3) | (tr << 2) | (br << 1) | bl;
+
+        // Get interpolated edge point for this cell
+        let px = x + 0.5;
+        let py = y + 0.5;
+
+        switch (cellType) {
+            case 1: case 14: px = x; py = y + 0.5; break;
+            case 2: case 13: px = x + 0.5; py = y + 1; break;
+            case 3: case 12: px = x; py = y + 0.5; break;
+            case 4: case 11: px = x + 1; py = y + 0.5; break;
+            case 6: case 9: px = x + 0.5; py = y + 1; break;
+            case 7: case 8: px = x; py = y + 0.5; break;
+            default: px = x + 0.5; py = y + 0.5; break;
+        }
+
+        points.push({ x: px, y: py });
+
+        // Determine next cell based on marching squares direction
+        let nextX = x;
+        let nextY = y;
+
+        switch (cellType) {
+            case 1: nextY++; break;
+            case 2: nextX++; break;
+            case 3: nextX++; break;
+            case 4: nextX++; break;
+            case 5: // Saddle point
+                if (prevDir === 0) nextY++; else nextX--; break;
+            case 6: nextY--; break;
+            case 7: nextY--; break;
+            case 8: nextX--; break;
+            case 9: nextY++; break;
+            case 10: // Saddle point
+                if (prevDir === 1) nextX++; else nextY--; break;
+            case 11: nextY++; break;
+            case 12: nextY--; break;
+            case 13: nextX--; break;
+            case 14: nextX--; break;
+            default: nextX++; break;
+        }
+
+        if (nextX > x) prevDir = 0;
+        else if (nextX < x) prevDir = 1;
+        else if (nextY > y) prevDir = 2;
+        else prevDir = 3;
+
+        x = nextX;
+        y = nextY;
+
+        if (x === startX && y === startY) break;
+    } while (true);
+
+    return points;
+}
+
+// Douglas-Peucker polygon simplification
+function simplifyPolygon(points, tolerance) {
+    if (points.length <= 3) return points;
+
+    let maxDist = 0;
+    let maxIdx = 0;
+    const first = points[0];
+    const last = points[points.length - 1];
+
+    for (let i = 1; i < points.length - 1; i++) {
+        const dist = perpendicularDist(points[i], first, last);
+        if (dist > maxDist) {
+            maxDist = dist;
+            maxIdx = i;
+        }
+    }
+
+    if (maxDist > tolerance) {
+        const left = simplifyPolygon(points.slice(0, maxIdx + 1), tolerance);
+        const right = simplifyPolygon(points.slice(maxIdx), tolerance);
+        return left.slice(0, -1).concat(right);
+    }
+
+    return [first, last];
+}
+
+function perpendicularDist(point, lineStart, lineEnd) {
+    const dx = lineEnd.x - lineStart.x;
+    const dy = lineEnd.y - lineStart.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-9) {
+        const ddx = point.x - lineStart.x;
+        const ddy = point.y - lineStart.y;
+        return Math.sqrt(ddx * ddx + ddy * ddy);
+    }
+    const t = Math.max(0, Math.min(1, ((point.x - lineStart.x) * dx + (point.y - lineStart.y) * dy) / lenSq));
+    const projX = lineStart.x + t * dx;
+    const projY = lineStart.y + t * dy;
+    const ddx = point.x - projX;
+    const ddy = point.y - projY;
+    return Math.sqrt(ddx * ddx + ddy * ddy);
+}
+
+function commitTextToLasso() {
+    const polygon = textToPolygon();
+    if (polygon.length >= 3) {
+        lassoPolygon = polygon;
+        textToolState = 'idle';
+        textToolContent = '';
+        if (textBlinkTimer) { clearInterval(textBlinkTimer); textBlinkTimer = null; }
+        draw();
+    }
+}
+
+function cancelTextTool() {
+    textToolState = 'idle';
+    textToolContent = '';
+    isResizingText = false;
+    if (textBlinkTimer) { clearInterval(textBlinkTimer); textBlinkTimer = null; }
+    draw();
+}
 
 let isDeleteTiling = false;
 let deleteAnchor = { x: 0, y: 0 };
@@ -562,7 +849,7 @@ function polygonRectOverlap(polygon, rect) {
 
 function canPreviewLassoFillAt(x, y) {
     if (!lassoPolygon || lassoPolygon.length < 3) return false;
-    if (currentTool === 'none' || currentTool === 'lasso') return false;
+    if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text') return false;
     if (!objectConfigs[currentTool]) return false;
     return pointInPolygon({ x, y }, lassoPolygon);
 }
@@ -978,16 +1265,42 @@ function fillLassoWithCurrentTool() {
         }
     }
 
+    // Helper: get rotation candidates for a boundary point (edge-aligned + blends)
+    function getBoundaryRotations(px, py) {
+        const near = getNearestBoundarySample({ x: px, y: py }, lassoPolygon);
+        const edgeAngle = near.angleDeg;
+        // Try the edge tangent, perpendicular to edge, base rotation, and blends
+        const candidates = [
+            edgeAngle,
+            edgeAngle + 90,
+            edgeAngle - 90,
+            rotDeg,
+            // Blends between base rotation and edge tangent for smoother transitions
+            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.25,
+            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.5,
+            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.75,
+            edgeAngle + 45,
+            edgeAngle - 45,
+        ];
+        return candidates.map(a => snapAngleDeg(normalizeAngleDeg(a), 1));
+    }
+
     // Try to cover each uncovered point
     for (const pt of uncoveredPoints) {
         if (objects.length >= maxObjects) break;
         if (isPointCoveredSpatial(pt.x, pt.y)) continue; // may have been covered by a nearby placement
 
+        const rotCandidates = getBoundaryRotations(pt.x, pt.y);
+        let placed = false;
         for (const sFrac of scaleSteps) {
+            if (placed) break;
             const tryScale = baseScale * sFrac;
-            if (placeTile(pt.x, pt.y, tryScale, rotDeg)) {
-                addToSpatialGrid(placedTiles[placedTiles.length - 1]);
-                break;
+            for (const tryRot of rotCandidates) {
+                if (placeTile(pt.x, pt.y, tryScale, tryRot)) {
+                    addToSpatialGrid(placedTiles[placedTiles.length - 1]);
+                    placed = true;
+                    break;
+                }
             }
         }
     }
@@ -1007,13 +1320,19 @@ function fillLassoWithCurrentTool() {
                 if (isPointCoveredSpatial(sx, sy)) continue;
                 if (!pointInPolygonInclusive({ x: sx, y: sy }, lassoPolygon)) continue;
 
-                // Try progressively smaller tiles
+                // Try progressively smaller tiles with edge-aligned rotations
+                const fineRotCandidates = getBoundaryRotations(sx, sy);
+                let finePlaced = false;
                 for (const sFrac of scaleSteps) {
+                    if (finePlaced) break;
                     const tryScale = baseScale * sFrac;
                     if (tryScale < fineMinScale) break;
-                    if (placeTile(sx, sy, tryScale, rotDeg)) {
-                        addToSpatialGrid(placedTiles[placedTiles.length - 1]);
-                        break;
+                    for (const tryRot of fineRotCandidates) {
+                        if (placeTile(sx, sy, tryScale, tryRot)) {
+                            addToSpatialGrid(placedTiles[placedTiles.length - 1]);
+                            finePlaced = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -1263,6 +1582,34 @@ if (undoBtn) {
 
 // Keyboard Interaction
 window.addEventListener('keydown', (e) => {
+    // Text tool input handling
+    if (textToolState === 'editing') {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            commitTextToLasso();
+            return;
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelTextTool();
+            return;
+        }
+        if (e.key === 'Backspace') {
+            e.preventDefault();
+            textToolContent = textToolContent.slice(0, -1);
+            draw();
+            return;
+        }
+        // Accept printable characters
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            textToolContent += e.key;
+            draw();
+            return;
+        }
+        // Allow Ctrl+Z to still work
+    }
+
     // Undo (Ctrl+Z)
     if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
@@ -1381,6 +1728,42 @@ canvas.addEventListener('mousedown', (e) => {
     const gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
 
     if (e.button === 0) { // Left click
+        // Text tool handling
+        if (currentTool === 'text') {
+            if (textToolState === 'editing' && isPointOnResizeHandle(gameX, gameY, camera.zoom)) {
+                // Start resizing
+                isResizingText = true;
+                const handle = getTextResizeHandle();
+                textResizeStartDist = Math.hypot(gameX - textToolPosition.x, gameY - textToolPosition.y);
+                textResizeStartSize = textToolFontSize;
+                draw();
+                return;
+            }
+            if (textToolState === 'editing') {
+                // Clicking outside the text box commits
+                const bb = getTextBoundingBox();
+                const margin = 20 / camera.zoom;
+                const isInsideBB = gameX >= bb.x - margin && gameX <= bb.x + bb.w + margin &&
+                                   gameY >= bb.y - margin && gameY <= bb.y + bb.h + margin;
+                if (!isInsideBB) {
+                    if (textToolContent.trim()) {
+                        commitTextToLasso();
+                    } else {
+                        cancelTextTool();
+                    }
+                    return;
+                }
+                return;
+            }
+            // Place new text
+            textToolState = 'editing';
+            textToolPosition = { x: gameX, y: gameY };
+            textToolContent = '';
+            lassoPolygon = [];
+            draw();
+            return;
+        }
+
         if (currentTool === 'lasso') {
             beginUndoBatch();
             isDrawingLasso = true;
@@ -1485,7 +1868,12 @@ canvas.addEventListener('mousemove', (e) => {
     const gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
     const gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
 
-    if (isDrawingLasso) {
+    if (isResizingText) {
+        const dist = Math.hypot(gameX - textToolPosition.x, gameY - textToolPosition.y);
+        const ratio = dist / (textResizeStartDist || 1);
+        textToolFontSize = clamp(textResizeStartSize * ratio, TEXT_MIN_FONT_SIZE, TEXT_MAX_FONT_SIZE);
+        draw();
+    } else if (isDrawingLasso) {
         const nextPoint = { x: gameX, y: gameY };
         if (!lastLassoPoint || distanceBetweenPoints(lastLassoPoint, nextPoint) >= 6) {
             lassoDraftPoints.push(nextPoint);
@@ -1565,6 +1953,10 @@ canvas.addEventListener('mouseup', (e) => {
         canvas.style.cursor = 'default';
     }
     if (e.button === 0) {
+        if (isResizingText) {
+            isResizingText = false;
+            draw();
+        }
         if (isDrawingLasso) {
             isDrawingLasso = false;
             if (lassoDraftPoints.length >= 2) {
@@ -1870,6 +2262,69 @@ function draw() {
         const bh = selectionBoxEnd.y - selectionBoxStart.y;
         ctx.fillRect(bx, by, bw, bh);
         ctx.strokeRect(bx, by, bw, bh);
+    }
+
+    // Draw Text Tool
+    if (textToolState === 'editing') {
+        ctx.save();
+        const bb = getTextBoundingBox();
+        const displayText = textToolContent || '';
+
+        // Draw text
+        if (displayText) {
+            ctx.font = `bold ${textToolFontSize}px ${textToolFont}`;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.textBaseline = 'top';
+            ctx.fillText(displayText, bb.x, bb.y);
+        }
+
+        // Draw bounding box
+        ctx.strokeStyle = '#ffd166';
+        ctx.lineWidth = 2 / camera.zoom;
+        ctx.setLineDash([6 / camera.zoom, 4 / camera.zoom]);
+        ctx.strokeRect(bb.x - 4, bb.y - 4, bb.w + 8, bb.h + 8);
+        ctx.setLineDash([]);
+
+        // Blinking cursor
+        const cursorVisible = Math.floor(Date.now() / 530) % 2 === 0;
+        if (cursorVisible) {
+            const cursorX = displayText ? bb.x + bb.w + 2 : bb.x;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2 / camera.zoom;
+            ctx.beginPath();
+            ctx.moveTo(cursorX, bb.y);
+            ctx.lineTo(cursorX, bb.y + bb.h);
+            ctx.stroke();
+        }
+
+        // Draw resize handle (circle at bottom-right corner)
+        if (displayText) {
+            const handle = getTextResizeHandle();
+            const handleR = TEXT_HANDLE_RADIUS / camera.zoom;
+            ctx.fillStyle = '#ffd166';
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2 / camera.zoom;
+            ctx.beginPath();
+            ctx.arc(handle.x, handle.y, handleR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        // Instructions text
+        ctx.font = `${12 / camera.zoom}px Arial, sans-serif`;
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.8)';
+        ctx.textBaseline = 'top';
+        ctx.fillText('Type text, Enter to confirm, Esc to cancel', bb.x, bb.y + bb.h + 12 / camera.zoom);
+
+        ctx.restore();
+
+        // Schedule redraw for cursor blink
+        if (!textBlinkTimer) {
+            textBlinkTimer = setInterval(() => {
+                if (textToolState === 'editing') draw();
+                else { clearInterval(textBlinkTimer); textBlinkTimer = null; }
+            }, 530);
+        }
     }
 
     const activeLassoPoints = isDrawingLasso ? lassoDraftPoints : lassoPolygon;
