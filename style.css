@@ -218,3 +218,46 @@ canvas {
     width: 40px;
     height: 30px;
 }
+
+#mobile-notice {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #121212;
+    z-index: 99999;
+    color: white;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    text-align: center;
+    padding: 30px;
+}
+
+#mobile-notice i {
+    font-size: 6rem;
+    color: #ff4444;
+    margin-bottom: 25px;
+}
+
+#mobile-notice h2 {
+    font-size: 2rem;
+    margin-bottom: 15px;
+    margin-top: 0;
+}
+
+#mobile-notice p {
+    font-size: 1.2rem;
+    line-height: 1.5;
+    color: #ccc;
+    max-width: 400px;
+}
+
+@media (max-width: 900px) and (pointer: coarse), (max-width: 600px) {
+    #mobile-notice {
+        display: flex;
+    }
+    #editor-container, #right-panel, #tutorial-btn, .bottom-tools, #properties-panel {
+        display: none !important;
+    }
+}
