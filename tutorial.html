@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tutorial - TurboGoose Level Editor</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #f1f1f1;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.2em;
+            color: #00ffcc;
+        }
+        .back-btn {
+            background: #333;
+            color: #fff;
+            text-decoration: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-weight: bold;
+            transition: background 0.2s;
+            border: 1px solid #444;
+        }
+        .back-btn:hover {
+            background: #444;
+        }
+        .step {
+            background: #1e1e1e;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            border: 1px solid #2a2a2a;
+        }
+        .step img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #333;
+            background: #000;
+        }
+        .step h2 {
+            margin-top: 0;
+            margin-bottom: 12px;
+            color: #00ffcc;
+            font-size: 1.5em;
+        }
+        .step p {
+            font-size: 1.15em;
+            line-height: 1.6;
+            margin: 0;
+            color: #ccc;
+        }
+        kbd {
+            background-color: #2b2b2b;
+            border: 1px solid #111;
+            border-radius: 4px;
+            box-shadow: 0 3px 0 #0a0a0a, 0 1px 1px rgba(0,0,0,0.5);
+            color: #eee;
+            display: inline-block;
+            font-family: 'Consolas', monospace;
+            font-size: 0.85em;
+            padding: 3px 8px;
+            margin: 0 3px;
+            font-weight: bold;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Editor Tutorial</h1>
+            <a href="index.html" class="back-btn">← Back to Editor</a>
+        </div>
+
+        <div class="step">
+            <h2>Placing Objects</h2>
+            <img src="tutorial-assets/placing-objects.png" alt="Placing Objects">
+            <p>Select an object from the right panel and <kbd>Left Click</kbd> anywhere in the level to place it.</p>
+        </div>
+
+        <div class="step">
+            <h2>Rotating Objects</h2>
+            <img src="tutorial-assets/rotate-object.png" alt="Rotating Objects">
+            <p>Use <kbd>Ctrl</kbd> + <kbd>Scroll</kbd> or the <kbd>Arrow Keys</kbd> to rotate objects before placing them, or rotate currently selected objects.</p>
+        </div>
+
+        <div class="step">
+            <h2>Resizing Objects</h2>
+            <img src="tutorial-assets/resize-objects.png" alt="Resizing Objects">
+            <p>Hold <kbd>Alt</kbd> + <kbd>Scroll</kbd> to scale objects up or down. This works for your tool preview or selected objects on the canvas.</p>
+        </div>
+
+        <div class="step">
+            <h2>Selecting Multiple Objects</h2>
+            <img src="tutorial-assets/selecting-multiple-objects.png" alt="Selecting Multiple Objects">
+            <p>With the default cursor selected, <kbd>Left Click</kbd> and drag in an empty area to draw a selection box and highlight multiple objects at once.</p>
+        </div>
+
+        <div class="step">
+            <h2>Removing Objects (Brush)</h2>
+            <img src="tutorial-assets/removing-objects-without-alt.png" alt="Removing Objects with Brush">
+            <p>Hold <kbd>Right Click</kbd> and drag your mouse to continuously erase objects like a typical eraser brush.</p>
+        </div>
+
+        <div class="step">
+            <h2>Removing Objects (Area)</h2>
+            <img src="tutorial-assets/removing-objects-with-alt.png" alt="Removing Objects in a Square">
+            <p>Hold <kbd>Alt</kbd> + <kbd>Right Click</kbd> and drag to quickly delete all objects inside an expanding rectangular area.</p>
+        </div>
+
+        <div class="step">
+            <h2>Tiling Objects</h2>
+            <img src="tutorial-assets/tile-placing.png" alt="Tiling Objects">
+            <p>Hold <kbd>Left Click</kbd> and drag to tile objects seamlessly in a continuous line. You can also hold <kbd>Alt</kbd> while dragging to fill a square block automatically.</p>
+        </div>
+
+        <div class="step">
+            <h2>Changing Object Properties</h2>
+            <img src="tutorial-assets/changing-object-properites.png" alt="Changing Object Properties">
+            <p>When selecting colorable objects (like certain blocks), open the Properties panel in the bottom to change their color.</p>
+        </div>
+
+        <div class="step">
+            <h2>Undo Actions</h2>
+            <img src="tutorial-assets/undo.png" alt="Undo Actions">
+            <p>Made a mistake? Click the Undo button at the bottom right or press <kbd>Ctrl</kbd> + <kbd>Z</kbd> to reverse your last action.</p>
+        </div>
+
+        <div class="step">
+            <h2>Brush Tool</h2>
+            <img src="tutorial-assets/brush-tool.png" alt="Brush Tool">
+            <p>Use the Brush tool to paint custom solid terrain areas freely. Hold <kbd>Ctrl</kbd> + <kbd>Scroll</kbd> while using the brush to adjust the brush radius.</p>
+        </div>
+
+        <div class="step">
+            <h2>Lasso Fill Tool</h2>
+            <img src="tutorial-assets/lasso-tool.png" alt="Lasso Tool">
+            <p>With the Lasso tool, click around to plot out a complex polygon, snapping the shape closed by clicking near the starting point. Then, select any block and click inside the shape to seamlessly fill it!</p>
+        </div>
+
+        <div class="step">
+            <h2>Text Tool</h2>
+            <img src="tutorial-assets/text-tool.png" alt="Text Tool">
+            <p>Select the Text tool, click on the canvas, and type your message. Press <kbd>Enter</kbd> to convert your text into a selection. Then use an object to fill it!</p>
+        </div>
+
+        <div class="step">
+            <h2>Grid Tool</h2>
+            <img src="tutorial-assets/using-grid-tool.png" alt="Grid Tool">
+            <p>Select the Grid tool and <kbd>Left Click</kbd> any placed block to lock the world grid to its position and rotation. <kbd>Right Click</kbd> anywhere to clear the active grid.</p>
+        </div>
+
+        <div class="step">
+            <h2>Level Boundaries</h2>
+            <img src="tutorial-assets/colored-lines-and-finish-line.png" alt="Level Boundaries">
+            <p>The colored dotted lines visually represent the death barriers for the ceiling and floor. The large checkerboard pattern indicates the Finish Line flag for your level.</p>
+        </div>
+
+        <div class="step">
+            <h2>Level Settings</h2>
+            <img src="tutorial-assets/settings.png" alt="Settings">
+            <p>Click the gear icon to modify core level mechanics such as game speed, gravity intensity, background gradients, and camera logic.</p>
+        </div>
+
+        <div class="step">
+            <h2>Exporting Your Level</h2>
+            <img src="tutorial-assets/exported-json.png" alt="Export JSON">
+            <p>Once your masterpiece is finished, click the Export button. Copy the generated JSON code and paste it into the TurboGoose game engine to play it!</p>
+        </div>
+
+    </div>
+</body>
+</html>
