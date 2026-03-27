@@ -6,8 +6,27 @@ const propPanel = document.getElementById('properties-panel');
 const propColorInput = document.getElementById('prop-blockColor');
 const propColorRow = document.getElementById('prop-color-row');
 const propFieldsContainer = document.getElementById('properties-fields');
+const leftPanel = document.getElementById('left-panel');
+const toggleLeftPanelBtn = document.getElementById('toggle-left-panel');
+const leftPanelDivider = document.getElementById('left-panel-divider');
+const leftPropertiesSection = document.getElementById('left-properties-section');
+const leftLayersSection = document.getElementById('left-layers-section');
+const layersListEl = document.getElementById('layers-list');
+const layerAddBtn = document.getElementById('layer-add-btn');
+const layerDeleteBtn = document.getElementById('layer-delete-btn');
+const layerRenameBtn = document.getElementById('layer-rename-btn');
+const layerDuplicateBtn = document.getElementById('layer-duplicate-btn');
 
 const toolPropertyOverrides = {};
+let layerState = {
+    nextId: 2,
+    activeId: 1,
+    items: [
+        { id: 1, name: 'Layer 1', hidden: false }
+    ]
+};
+let draggingLayerId = null;
+let objectClipboard = [];
 const BASE_OBJECT_PROPERTY_DEFS = [
     { key: 'collison', label: 'Collison', type: 'checkbox', default: true }
 ];
@@ -89,6 +108,369 @@ function setToolOverride(tool, key, value) {
     toolPropertyOverrides[tool][key] = value;
 }
 
+function getLayerById(id) {
+    return layerState.items.find(layer => layer.id === id) || null;
+}
+
+function getLayerIndexById(id) {
+    return layerState.items.findIndex(layer => layer.id === id);
+}
+
+function getBottomLayer() {
+    if (layerState.items.length === 0) return null;
+    return layerState.items[layerState.items.length - 1];
+}
+
+function getLayerZById(layerId) {
+    const index = getLayerIndexById(layerId);
+    if (index < 0) return 5;
+    return (layerState.items.length - index) * 5;
+}
+
+function assignLayerToObject(obj, layerId) {
+    const fallback = getBottomLayer();
+    const resolvedId = getLayerById(layerId) ? layerId : (fallback ? fallback.id : 1);
+    obj.layerId = resolvedId;
+    obj.z = getLayerZById(resolvedId);
+}
+
+function updateObjectLayerDepths() {
+    for (const obj of objects) {
+        if (!obj || obj.type === 'finishLine') continue;
+        assignLayerToObject(obj, obj.layerId);
+    }
+}
+
+function normalizeLayerStateForObjects() {
+    const objectList = objects.filter(obj => obj && obj.type !== 'finishLine');
+    const hasLayerIds = objectList.some(obj => getLayerById(obj.layerId));
+
+    if (!hasLayerIds) {
+        const zIndices = objectList
+            .map(obj => Math.round(((Number(obj.z) || 5) - 5) / 5))
+            .filter(idx => Number.isFinite(idx))
+            .map(idx => Math.max(0, idx));
+
+        const maxIndex = zIndices.length > 0 ? Math.max(...zIndices) : 0;
+        const neededLayers = Math.max(1, maxIndex + 1);
+
+        layerState.items = [];
+        for (let i = 0; i < neededLayers; i++) {
+            const id = i + 1;
+            layerState.items.push({ id, name: `Layer ${id}`, hidden: false });
+        }
+        layerState.nextId = neededLayers + 1;
+        layerState.activeId = layerState.items[0].id;
+
+        for (const obj of objectList) {
+            const zIndex = Math.max(0, Math.round(((Number(obj.z) || 5) - 5) / 5));
+            const targetIndex = Math.max(0, Math.min(layerState.items.length - 1, layerState.items.length - 1 - zIndex));
+            assignLayerToObject(obj, layerState.items[targetIndex].id);
+        }
+    } else {
+        ensureActiveLayerIsValid();
+        updateObjectLayerDepths();
+    }
+}
+
+function isLayerHiddenForObject(obj) {
+    const layer = getLayerById(obj.layerId);
+    return !!(layer && layer.hidden);
+}
+
+function isObjectEditableInCurrentLayer(obj) {
+    if (!obj || obj.type === 'finishLine') return true;
+    const active = getActiveLayer();
+    if (!active) return true;
+    const layer = getLayerById(obj.layerId);
+    if (layer && layer.hidden) return false;
+    return obj.layerId === active.id;
+}
+
+function sanitizeSelectionForActiveLayer() {
+    selectedObjects = selectedObjects.filter(obj => obj.type === 'finishLine' || isObjectEditableInCurrentLayer(obj));
+}
+
+function getActiveLayer() {
+    return getLayerById(layerState.activeId) || layerState.items[0] || null;
+}
+
+function ensureActiveLayerIsValid() {
+    if (!getLayerById(layerState.activeId) && layerState.items.length > 0) {
+        layerState.activeId = layerState.items[0].id;
+    }
+}
+
+function moveLayer(fromId, toId, placeAfter) {
+    if (fromId === toId) return;
+
+    const fromIndex = layerState.items.findIndex(layer => layer.id === fromId);
+    const toIndex = layerState.items.findIndex(layer => layer.id === toId);
+    if (fromIndex < 0 || toIndex < 0) return;
+
+    const [moved] = layerState.items.splice(fromIndex, 1);
+    const adjustedTo = layerState.items.findIndex(layer => layer.id === toId);
+    const insertIndex = placeAfter ? adjustedTo + 1 : adjustedTo;
+    layerState.items.splice(insertIndex, 0, moved);
+    updateObjectLayerDepths();
+}
+
+function commitInlineLayerRename(layerId, inputEl) {
+    const layer = getLayerById(layerId);
+    if (!layer || !inputEl) return;
+
+    const trimmed = inputEl.value.trim();
+    runUndoableAction(() => {
+        if (trimmed) {
+            layer.name = trimmed;
+        }
+        renderLayersUI();
+        draw();
+    });
+}
+
+function startInlineLayerRename(layerId) {
+    const row = layersListEl ? layersListEl.querySelector(`.layer-row[data-layer-id="${layerId}"]`) : null;
+    if (!row) return;
+
+    const layer = getLayerById(layerId);
+    if (!layer) return;
+
+    const nameEl = row.querySelector('.layer-name');
+    if (!nameEl) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'layer-name-input';
+    input.value = layer.name;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+    const commitOnce = () => {
+        if (committed) return;
+        committed = true;
+        commitInlineLayerRename(layerId, input);
+    };
+
+    input.addEventListener('blur', commitOnce);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            commitOnce();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            committed = true;
+            renderLayersUI();
+        }
+    });
+}
+
+function renderLayersUI() {
+    if (!layersListEl) return;
+
+    layersListEl.innerHTML = '';
+    for (const layer of layerState.items) {
+        const row = document.createElement('div');
+        row.className = `layer-row${layer.id === layerState.activeId ? ' active' : ''}`;
+        row.dataset.layerId = String(layer.id);
+        row.draggable = true;
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'layer-name';
+        nameEl.textContent = layer.name;
+        nameEl.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            startInlineLayerRename(layer.id);
+        });
+
+        const hideBtn = document.createElement('button');
+        hideBtn.className = 'layer-hide-btn';
+        hideBtn.title = layer.hidden ? 'Show Layer' : 'Hide Layer';
+        hideBtn.innerHTML = layer.hidden
+            ? '<i class="fa-regular fa-eye-slash" aria-hidden="true"></i>'
+            : '<i class="fa-regular fa-eye" aria-hidden="true"></i>';
+        hideBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            runUndoableAction(() => {
+                layer.hidden = !layer.hidden;
+                sanitizeSelectionForActiveLayer();
+                renderLayersUI();
+                draw();
+            });
+        });
+
+        row.addEventListener('click', () => {
+            layerState.activeId = layer.id;
+            sanitizeSelectionForActiveLayer();
+            renderLayersUI();
+            draw();
+        });
+
+        row.addEventListener('dragstart', (e) => {
+            draggingLayerId = layer.id;
+            row.classList.add('dragging');
+            if (e.dataTransfer) {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', String(layer.id));
+            }
+        });
+
+        row.addEventListener('dragend', () => {
+            draggingLayerId = null;
+            const rows = layersListEl.querySelectorAll('.layer-row');
+            rows.forEach(item => item.classList.remove('dragging', 'drop-before', 'drop-after'));
+        });
+
+        row.addEventListener('dragover', (e) => {
+            if (draggingLayerId === null || draggingLayerId === layer.id) return;
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            const placeAfter = (e.clientY - rect.top) > rect.height / 2;
+            row.classList.toggle('drop-before', !placeAfter);
+            row.classList.toggle('drop-after', placeAfter);
+        });
+
+        row.addEventListener('dragleave', () => {
+            row.classList.remove('drop-before', 'drop-after');
+        });
+
+        row.addEventListener('drop', (e) => {
+            if (draggingLayerId === null || draggingLayerId === layer.id) return;
+            e.preventDefault();
+            const rect = row.getBoundingClientRect();
+            const placeAfter = (e.clientY - rect.top) > rect.height / 2;
+            runUndoableAction(() => {
+                moveLayer(draggingLayerId, layer.id, placeAfter);
+                layerState.activeId = draggingLayerId;
+                renderLayersUI();
+            });
+        });
+
+        row.appendChild(nameEl);
+        row.appendChild(hideBtn);
+        layersListEl.appendChild(row);
+    }
+}
+
+function createLayer() {
+    runUndoableAction(() => {
+        const id = layerState.nextId++;
+        const layer = { id, name: `Layer ${id}`, hidden: false };
+        const activeIndex = layerState.items.findIndex(item => item.id === layerState.activeId);
+        const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
+        layerState.items.splice(insertIndex, 0, layer);
+        layerState.activeId = id;
+        updateObjectLayerDepths();
+        renderLayersUI();
+        draw();
+    });
+}
+
+function deleteActiveLayer() {
+    if (layerState.items.length <= 1) {
+        alert('At least one layer is required.');
+        return;
+    }
+    runUndoableAction(() => {
+        const removedId = layerState.activeId;
+        const removedIndex = layerState.items.findIndex(layer => layer.id === removedId);
+        layerState.items = layerState.items.filter(layer => layer.id !== removedId);
+
+        const fallbackLayer = layerState.items[Math.min(Math.max(removedIndex, 0), layerState.items.length - 1)] || layerState.items[layerState.items.length - 1];
+        for (const obj of objects) {
+            if (obj.type === 'finishLine') continue;
+            if (obj.layerId === removedId && fallbackLayer) {
+                obj.layerId = fallbackLayer.id;
+            }
+        }
+
+        ensureActiveLayerIsValid();
+        sanitizeSelectionForActiveLayer();
+        updateObjectLayerDepths();
+        renderLayersUI();
+        draw();
+    });
+}
+
+function duplicateActiveLayer() {
+    const active = getActiveLayer();
+    if (!active) return;
+
+    runUndoableAction(() => {
+        const id = layerState.nextId++;
+        const copy = {
+            id,
+            name: `${active.name} Copy`,
+            hidden: active.hidden
+        };
+
+        const activeIndex = layerState.items.findIndex(layer => layer.id === active.id);
+        const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
+        layerState.items.splice(insertIndex, 0, copy);
+        layerState.activeId = id;
+        updateObjectLayerDepths();
+        renderLayersUI();
+        draw();
+    });
+}
+
+function renameActiveLayer() {
+    const active = getActiveLayer();
+    if (!active) return;
+    startInlineLayerRename(active.id);
+}
+
+function setupLeftPanelResize() {
+    if (!leftPanelDivider || !leftPanel || !leftPropertiesSection || !leftLayersSection) return;
+
+    let isDragging = false;
+
+    const onMove = (e) => {
+        if (!isDragging) return;
+        const bounds = leftPanel.getBoundingClientRect();
+        const localY = e.clientY - bounds.top;
+        const pct = Math.max(20, Math.min(80, (localY / bounds.height) * 100));
+        leftPropertiesSection.style.flex = `0 0 ${pct}%`;
+        leftLayersSection.style.flex = `1 1 ${100 - pct}%`;
+    };
+
+    const onUp = () => {
+        isDragging = false;
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+    };
+
+    leftPanelDivider.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        isDragging = true;
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'row-resize';
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    });
+}
+
+function setupLayersUI() {
+    if (layerAddBtn) layerAddBtn.addEventListener('click', createLayer);
+    if (layerDeleteBtn) layerDeleteBtn.addEventListener('click', deleteActiveLayer);
+    if (layerRenameBtn) layerRenameBtn.addEventListener('click', renameActiveLayer);
+    if (layerDuplicateBtn) layerDuplicateBtn.addEventListener('click', duplicateActiveLayer);
+    renderLayersUI();
+}
+
+function setupLeftPanelToggle() {
+    if (!toggleLeftPanelBtn || !leftPanel) return;
+
+    toggleLeftPanelBtn.addEventListener('click', () => {
+        leftPanel.classList.toggle('closed');
+        toggleLeftPanelBtn.textContent = leftPanel.classList.contains('closed') ? '▶' : '◀';
+    });
+}
+
 function getSignedScaleFromCollison(scale, collisonEnabled) {
     const magnitude = Math.max(0.1, Math.abs(scale || 1));
     return collisonEnabled ? magnitude : -magnitude;
@@ -110,13 +492,16 @@ function createPlacedObject(type, x, y, rotation, scale) {
         placed[def.key] = override !== undefined ? override : def.default;
     }
 
+    const activeLayer = getActiveLayer();
+    assignLayerToObject(placed, activeLayer ? activeLayer.id : 1);
+
     placed.s = getSignedScaleFromCollison(placed.s, placed.collison !== false);
 
     return placed;
 }
 
 // Camera and scaling
-let camera = { x: 0, y: 0, zoom: 1.5 };
+let camera = { x: 175, y: 0, zoom: 1.5 };
 let isPanning = false;
 let startPan = { x: 0, y: 0 };
 
@@ -359,6 +744,8 @@ function createSnapshot() {
         birdStart: deepClone(birdStart),
         finishLineObj: deepClone(finishLineObj),
         levelConfig: deepClone(levelConfig),
+        layerState: deepClone(layerState),
+        toolPropertyOverrides: deepClone(toolPropertyOverrides),
         previewRotation,
         previewScale
     };
@@ -387,16 +774,23 @@ function restoreSnapshot(snapshot) {
     birdStart = deepClone(snapshot.birdStart || { x: 100, y: 300 });
     finishLineObj = deepClone(snapshot.finishLineObj || { type: 'finishLine', x: 1200, y: 0 });
     levelConfig = deepClone(snapshot.levelConfig || levelConfig);
+    layerState = deepClone(snapshot.layerState || layerState);
+    const restoredOverrides = deepClone(snapshot.toolPropertyOverrides || {});
+    Object.keys(toolPropertyOverrides).forEach(key => delete toolPropertyOverrides[key]);
+    Object.assign(toolPropertyOverrides, restoredOverrides);
     previewRotation = snapshot.previewRotation ?? 0;
     previewScale = snapshot.previewScale ?? 1;
 
     const safeIndices = Array.isArray(snapshot.selectedIndices) ? snapshot.selectedIndices : [];
     selectedObjects = safeIndices.map(idx => objects[idx]).filter(Boolean);
+    normalizeLayerStateForObjects();
+    sanitizeSelectionForActiveLayer();
 
     updateToolbarActiveTool();
     if (editorContainer) {
         editorContainer.style.background = `linear-gradient(to bottom, ${levelConfig.gradientTopColor}, ${levelConfig.gradientBottomColor})`;
     }
+    renderLayersUI();
 
     isRestoringUndo = false;
     draw();
@@ -482,6 +876,10 @@ function applyLevelConfigFromData(data) {
     } else if (typeof data.floorEnabled === 'boolean') {
         levelConfig.floorEnabled = data.floorEnabled;
     }
+}
+
+function cloneObjectsForClipboard(items) {
+    return deepClone(items.map(obj => ({ ...obj })));
 }
 
 
@@ -1022,6 +1420,7 @@ function deleteObjectsByPredicate(predicate) {
     let didDelete = false;
     for (let i = objects.length - 1; i >= 0; i--) {
         const obj = objects[i];
+        if (!isObjectEditableInCurrentLayer(obj)) continue;
         if (predicate(obj)) {
             objects.splice(i, 1);
             selectedObjects = selectedObjects.filter(o => o !== obj);
@@ -1877,6 +2276,10 @@ const undoBtn = document.getElementById('undo-btn');
 const exportBtn = document.getElementById('export-btn');
 const clearBtn = document.getElementById('clear-btn');
 
+setupLeftPanelToggle();
+setupLeftPanelResize();
+setupLayersUI();
+
 // Toggle panel
 togglePanelBtn.addEventListener('click', () => {
     rightPanel.classList.toggle('closed');
@@ -1937,6 +2340,56 @@ window.addEventListener('keydown', (e) => {
     if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
         performUndo();
+        return;
+    }
+
+    // Copy selected objects (Ctrl+C)
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+        if (currentTool === 'none' && selectedObjects.length > 0) {
+            const copyable = selectedObjects.filter(obj => obj.type !== 'finishLine');
+            if (copyable.length > 0) {
+                objectClipboard = cloneObjectsForClipboard(copyable);
+            }
+            e.preventDefault();
+        }
+        return;
+    }
+
+    // Cut selected objects (Ctrl+X)
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'x' || e.key === 'X')) {
+        if (currentTool === 'none' && selectedObjects.length > 0) {
+            const copyable = selectedObjects.filter(obj => obj.type !== 'finishLine');
+            if (copyable.length > 0) {
+                objectClipboard = cloneObjectsForClipboard(copyable);
+                runUndoableAction(() => {
+                    objects = objects.filter(obj => !selectedObjects.includes(obj));
+                    selectedObjects = [];
+                    draw();
+                });
+            }
+            e.preventDefault();
+        }
+        return;
+    }
+
+    // Paste objects (Ctrl+V)
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+        if (objectClipboard.length > 0) {
+            e.preventDefault();
+            runUndoableAction(() => {
+                const activeLayer = getActiveLayer();
+                const pasted = objectClipboard.map(obj => {
+                    const clone = deepClone(obj);
+                    clone.x = Number((clone.x + 24).toFixed(2));
+                    clone.y = Number((clone.y - 24).toFixed(2));
+                    assignLayerToObject(clone, activeLayer ? activeLayer.id : 1);
+                    return clone;
+                });
+                objects.push(...pasted);
+                selectedObjects = pasted;
+                draw();
+            });
+        }
         return;
     }
 
@@ -2335,7 +2788,7 @@ canvas.addEventListener('mousemove', (e) => {
         const minY = Math.min(selectionBoxStart.y, selectionBoxEnd.y);
         const maxY = Math.max(selectionBoxStart.y, selectionBoxEnd.y);
         
-        selectedObjects = objects.filter(obj => obj.x >= minX && obj.x <= maxX && obj.y >= minY && obj.y <= maxY);
+        selectedObjects = objects.filter(obj => isObjectEditableInCurrentLayer(obj) && obj.x >= minX && obj.x <= maxX && obj.y >= minY && obj.y <= maxY);
         markUndoDirty();
     }
 
@@ -2567,6 +3020,7 @@ function getObjectAt(x, y) {
 function getObjectIndexAt(x, y) {
     for (let i = objects.length - 1; i >= 0; i--) {
         const obj = objects[i];
+        if (!isObjectEditableInCurrentLayer(obj)) continue;
         const scale = Math.abs(obj.s || 1);
         const hitRadius = 20 * scale;
         if (Math.abs(obj.x - x) < hitRadius && Math.abs(obj.y - y) < hitRadius) {
@@ -2585,38 +3039,18 @@ function draw() {
         ctx.save();
 
         // Apply Camera
-    ctx.translate(camera.x, camera.y);
-    ctx.scale(camera.zoom, camera.zoom);
-
-// Draw bird (Goose)
-    ctx.save();
-    
-    // The goose's true start position in the engine requires a visual offset compared to generic blocks
-    // Based on center overlap measurements: Goose anchor is positioned roughly on the bottom-center of its sprite
-    // while generic objects are centered.
-    const GOOSE_OFFSET_X = 18; // Nudge right exactly to align with game screenshot
-    const GOOSE_OFFSET_Y = -12; // Nudge up to rest exactly where the game anchors it
-    
-    ctx.translate(birdStart.x + GOOSE_OFFSET_X, birdStart.y + GOOSE_OFFSET_Y);
-    
-    // Flip goose horizontally
-    ctx.scale(-1, 1);
-
-    if (gooseImg.complete && gooseImg.naturalWidth !== 0) {
-        // Draw goose centered
-        ctx.drawImage(gooseImg, -GOOSE_WIDTH / 2, -GOOSE_HEIGHT / 2, GOOSE_WIDTH, GOOSE_HEIGHT);
-    } else {
-        ctx.font = '30px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('🦆', 0, 0);
-    }
-    ctx.restore();
+        ctx.translate(camera.x, camera.y);
+        ctx.scale(camera.zoom, camera.zoom);
 
     // Draw objects (render in array order so newest objects appear on top)
-    const sortedObjects = objects;
+    const sortedObjects = [...objects].sort((a, b) => {
+        const za = Number.isFinite(a.z) ? a.z : 0;
+        const zb = Number.isFinite(b.z) ? b.z : 0;
+        return za - zb;
+    });
 
     sortedObjects.forEach(obj => {
+        if (isLayerHiddenForObject(obj)) return;
         const config = objectConfigs[obj.type];
         if (config) {
             ctx.save();
@@ -3016,6 +3450,23 @@ function draw() {
     }
     ctx.restore();
 
+    // Draw bird (Goose) last so it always appears above everything else.
+    ctx.save();
+    const GOOSE_OFFSET_X = 18;
+    const GOOSE_OFFSET_Y = -12;
+    ctx.translate(birdStart.x + GOOSE_OFFSET_X, birdStart.y + GOOSE_OFFSET_Y);
+    ctx.scale(-1, 1);
+
+    if (gooseImg.complete && gooseImg.naturalWidth !== 0) {
+        ctx.drawImage(gooseImg, -GOOSE_WIDTH / 2, -GOOSE_HEIGHT / 2, GOOSE_WIDTH, GOOSE_HEIGHT);
+    } else {
+        ctx.font = '30px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🦆', 0, 0);
+    }
+    ctx.restore();
+
     ctx.restore(); // Restore Camera
     } catch (e) {
         console.error("DRAW ERROR:", e);
@@ -3088,7 +3539,7 @@ exportBtn.addEventListener('click', () => {
             }
 
             for (const [key, value] of Object.entries(obj)) {
-                if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'a') continue;
+                if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'a' || key === 'layerId') continue;
                 if (value === undefined) continue;
                 if (key in exportedBullet) continue;
                 exportedBullet[key] = value;
@@ -3112,7 +3563,7 @@ exportBtn.addEventListener('click', () => {
             exportedObj.s = obj.s;
         }
         for (const [key, value] of Object.entries(obj)) {
-            if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's') continue;
+            if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'layerId') continue;
             if (value === undefined) continue;
             exportedObj[key] = value;
         }
@@ -3347,6 +3798,7 @@ propFieldsContainer.addEventListener('input', (e) => {
             let changed = false;
             for (const obj of selectedObjects) {
                 if (!getDefForObjectKey(obj.type, key)) continue;
+                if (!isObjectEditableInCurrentLayer(obj)) continue;
                 obj[key] = newValue;
                 if (key === 'collison') {
                     obj.s = getSignedScaleFromCollison(obj.s || 1, newValue !== false);

@@ -13,9 +13,40 @@
         <h2>Mobile Not Supported</h2>
         <p>The TurboGoose Level Editor requires a mouse and keyboard to navigate the stage, place objects precisely, and use necessary keyboard shortcuts. Please open this site on a desktop or laptop device!</p>
     </div>
-    <a href="tutorial.html" id="tutorial-btn" style="position: absolute; top: 15px; left: 15px; z-index: 1000; background: #2a2a2a; color: #00ffcc; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: bold; border: 1px solid #444; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: background 0.2s;">
+    <a href="tutorial.html" id="tutorial-btn" style="position: absolute; top: 15px; right: 250px; z-index: 1000; background: #2a2a2a; color: #00ffcc; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: bold; border: 1px solid #444; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: background 0.2s;">
         <i class="fa-solid fa-circle-question" style="margin-right: 6px;"></i>Tutorial
     </a>
+
+    <div id="left-panel">
+        <button id="toggle-left-panel">◀</button>
+        <div id="left-panel-content">
+            <div id="left-properties-section" class="left-split-section">
+                <div class="section-title">Properties</div>
+                <div class="left-section-body">
+                    <div id="properties-panel" class="closed">
+                        <label id="prop-color-row">Block Color: <input type="color" id="prop-blockColor" value="#ffffff"></label>
+                        <div id="properties-fields"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="left-panel-divider" title="Drag to resize sections"></div>
+
+            <div id="left-layers-section" class="left-split-section">
+                <div class="section-title">Layers</div>
+                <div class="layer-toolbar">
+                    <button id="layer-add-btn" class="tool-btn" title="Create Layer"><i class="fa-solid fa-plus"></i></button>
+                    <button id="layer-delete-btn" class="tool-btn" title="Delete Layer"><i class="fa-solid fa-trash"></i></button>
+                    <button id="layer-rename-btn" class="tool-btn" title="Rename Layer"><i class="fa-solid fa-pen"></i></button>
+                    <button id="layer-duplicate-btn" class="tool-btn" title="Duplicate Layer"><i class="fa-regular fa-copy"></i></button>
+                </div>
+                <div class="left-section-body">
+                    <div id="layers-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="editor-container">
         <canvas id="canvas"></canvas>
     </div>
@@ -84,12 +115,6 @@
             <label>Bottom Gradient Color: <input type="color" id="set-gradientBottom" value="#c2ccff"></label>
             <button id="close-settings-modal">Save</button>
         </div>
-    </div>
-
-    <!-- Collapsible Properties Panel -->
-    <div id="properties-panel" class="closed">
-        <label id="prop-color-row">Block Color: <input type="color" id="prop-blockColor" value="#ffffff"></label>
-        <div id="properties-fields"></div>
     </div>
 
     <script src="script.js"></script>
