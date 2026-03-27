@@ -829,6 +829,13 @@ let deleteBrushRotation = 0;
 let deleteBrushRadius = 20;
 
 function getTilingMetrics(tool) {
+    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text') {
+        return { 
+            dims: { w: activeGrid.w, h: activeGrid.h }, 
+            scale: 1, 
+            rad: activeGrid.rotation * Math.PI / 180 
+        };
+    }
     const hasTool = tool !== 'none' && objectConfigs[tool];
     const dims = hasTool ? getToolDimensions(tool) : { w: SPIKE_WIDTH, h: SPIKE_WIDTH };
     const scale = hasTool ? previewScale : 1;

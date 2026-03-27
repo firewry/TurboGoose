@@ -7,8 +7,8 @@
     "heightMode": "aspect",
     "colorable": false,
     "fallbackColor": "#ff8888",
-    "tileWidthMod": 0.82,
-    "tileHeightMod": 0.45
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
   },
   "floorDirt": {
     "name": "Dirt",
