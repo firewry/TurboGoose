@@ -23,12 +23,13 @@ canvas {
     top: 0;
     right: 0;
     height: 100%;
-    width: 60px;
+    width: 170px;
     background: #222;
     transition: transform 0.3s;
     display: flex;
     flex-direction: column;
     box-shadow: -2px 0 5px rgba(0,0,0,0.5);
+    overflow-y: auto;
 }
 
 #right-panel.closed {
@@ -55,15 +56,31 @@ canvas {
 .panel-content {
     display: flex;
     flex-direction: column;
-    padding: 10px 0;
+    padding: 10px 8px;
     align-items: center;
     height: 100%;
+    min-height: 100%;
     box-sizing: border-box;
 }
 
+.sidebar-section {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.section-title {
+    color: #cfd4da;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 8px 4px;
+}
+
 .toolbar {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(3, 40px);
+    justify-content: center;
     gap: 10px;
 }
 

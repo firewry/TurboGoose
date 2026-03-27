@@ -55,5 +55,192 @@
     "fallbackColor": "#00aa00",
     "tileWidthMod": 1,
     "tileHeightMod": 1
+  },
+  "PipeTip": {
+    "name": "Pipe Tip",
+    "icon": "assets/pipe_tip.webp",
+    "sprite": "assets/pipe_tip.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#00aa00",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "PipeBody": {
+    "name": "Pipe Body",
+    "icon": "assets/pipe_body.webp",
+    "sprite": "assets/pipe_body.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#00aa00",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "bounceBlock": {
+    "name": "Jelly Blue",
+    "icon": "assets/jelly_block2.webp",
+    "sprite": "assets/jelly_block2.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#66aaff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "bounceBlockA": {
+    "name": "Jelly Pink",
+    "icon": "assets/jellyblock2a.webp",
+    "sprite": "assets/jellyblock2a.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#ff77cc",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "bounceBlockB": {
+    "name": "Jelly Green",
+    "icon": "assets/jellyblock2c.webp",
+    "sprite": "assets/jellyblock2c.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#66cc66",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "bounceBlockD": {
+    "name": "Jelly White",
+    "icon": "assets/jellyblock2d.webp",
+    "sprite": "assets/jellyblock2d.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#ffffff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "glueBlock": {
+    "name": "Glue Block",
+    "icon": "assets/glue_block.webp",
+    "sprite": "assets/glue_block.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#a1d48f",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "iceBlock": {
+    "name": "Ice Block",
+    "icon": "assets/ice_block.webp",
+    "sprite": "assets/ice_block.webp",
+    "width": 95,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#a8dbff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "sandBlock": {
+    "name": "Sand Block",
+    "icon": "assets/sand_block.webp",
+    "sprite": "assets/sand_block.webp",
+    "width": 48,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#d7c37a",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "glassBlock": {
+    "name": "Glass Block",
+    "icon": "assets/glass_pane.webp",
+    "sprite": "assets/glass_pane.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#b5f2ff",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "graniteBlock": {
+    "name": "Granite Block",
+    "icon": "assets/granite_block.webp",
+    "sprite": "assets/granite_block.webp",
+    "width": 75.92,
+    "heightMode": "square",
+    "colorable": false,
+    "fallbackColor": "#888888",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "floorGrass": {
+    "name": "Grass",
+    "icon": "assets/floor_grass4.webp",
+    "sprite": "assets/floor_grass4.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#55aa55",
+    "tileWidthMod": 0.95,
+    "tileHeightMod": 0.95
+  },
+  "steelBar": {
+    "name": "Steel Bar",
+    "icon": "assets/steel_bar.webp",
+    "sprite": "assets/steel_bar.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#8899aa",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "rock1": {
+    "name": "Rock 1",
+    "icon": "assets/rock1.webp",
+    "sprite": "assets/rock1.webp",
+    "width": 60,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#888888",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "rock2": {
+    "name": "Rock 2",
+    "icon": "assets/rock2.webp",
+    "sprite": "assets/rock2.webp",
+    "width": 53,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#888888",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "tree": {
+    "name": "Tree",
+    "icon": "assets/tree.webp",
+    "sprite": "assets/tree.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#559955",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
+  },
+  "plank": {
+    "name": "Plank",
+    "icon": "assets/plank.webp",
+    "sprite": "assets/plank.webp",
+    "width": 75.92,
+    "heightMode": "aspect",
+    "colorable": false,
+    "fallbackColor": "#8b5a2b",
+    "tileWidthMod": 1,
+    "tileHeightMod": 1
   }
 }
