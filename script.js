@@ -1459,7 +1459,7 @@ function getTilingMetrics(tool) {
     }
     const hasTool = tool !== 'none' && objectConfigs[tool];
     const dims = hasTool ? getToolDimensions(tool) : { w: SPIKE_WIDTH, h: SPIKE_WIDTH };
-    const scale = hasTool ? Math.abs(previewScale || 1) : 1;
+    const scale = hasTool ? getCompensatedScaleMagnitude(tool, previewScale || 1) : 1;
     const rad = (hasTool ? previewRotation : 0) * Math.PI / 180;
     return { dims, scale, rad };
 }
@@ -1898,9 +1898,10 @@ function fillLassoWithCurrentTool() {
     if (!objectConfigs[currentTool]) return;
 
     const dims = getToolDimensions(currentTool);
-    const baseScale = Math.abs(previewScale || 1);
-    const tileW = Math.max(1, dims.w * baseScale);
-    const tileH = Math.max(1, dims.h * baseScale);
+    const baseRawScale = Math.abs(previewScale || 1);
+    const baseVisualScale = getCompensatedScaleMagnitude(currentTool, previewScale || 1);
+    const tileW = Math.max(1, dims.w * baseVisualScale);
+    const tileH = Math.max(1, dims.h * baseVisualScale);
     const rotDeg = previewRotation || 0;
     const rotRad = rotDeg * Math.PI / 180;
     const cosR = Math.cos(rotRad);
@@ -1915,11 +1916,12 @@ function fillLassoWithCurrentTool() {
     const insetPolygon = insetPolygonByAmount(lassoPolygon, 0.5);
     const checkPolygon = (insetPolygon && insetPolygon.length >= 3) ? insetPolygon : lassoPolygon;
 
-    function placeTile(cx, cy, scale, rot) {
+    function placeTile(cx, cy, rawScale, rot) {
         if (objects.length >= maxObjects) return false;
-        const s = Number(scale.toFixed(3));
-        const w = dims.w * s;
-        const h = dims.h * s;
+        const s = Number(rawScale.toFixed(3));
+        const visualScale = getCompensatedScaleMagnitude(currentTool, s);
+        const w = dims.w * visualScale;
+        const h = dims.h * visualScale;
         // Verify ALL sample points of the rotated rect are inside the polygon
         if (!isRotatedRectInsidePolygon(cx, cy, w, h, rot, checkPolygon)) return false;
 
@@ -1979,7 +1981,7 @@ function fillLassoWithCurrentTool() {
             // Quick reject: is center even inside polygon?
             if (!pointInPolygon({ x: wx, y: wy }, lassoPolygon)) continue;
 
-            placeTile(wx, wy, baseScale, rotDeg);
+            placeTile(wx, wy, baseRawScale, rotDeg);
         }
     }
 
@@ -2085,7 +2087,7 @@ function fillLassoWithCurrentTool() {
         let placed = false;
         for (const sFrac of scaleSteps) {
             if (placed) break;
-            const tryScale = baseScale * sFrac;
+            const tryScale = baseRawScale * sFrac;
             for (const tryRot of rotCandidates) {
                 if (placeTile(pt.x, pt.y, tryScale, tryRot)) {
                     addToSpatialGrid(placedTiles[placedTiles.length - 1]);
@@ -2099,7 +2101,7 @@ function fillLassoWithCurrentTool() {
     // === PHASE 3: Final gap closure ===
     // Even finer scan to catch any remaining micro-gaps
     const fineSpacing = Math.max(1, minTileDim * 0.06);
-    const fineMinScale = baseScale * 0.04;
+    const fineMinScale = baseRawScale * 0.04;
 
     for (let sy = bounds.minY; sy <= bounds.maxY; sy += fineSpacing) {
         const intersections = getScanlineIntersections(lassoPolygon, sy);
@@ -2116,7 +2118,7 @@ function fillLassoWithCurrentTool() {
                 let finePlaced = false;
                 for (const sFrac of scaleSteps) {
                     if (finePlaced) break;
-                    const tryScale = baseScale * sFrac;
+                    const tryScale = baseRawScale * sFrac;
                     if (tryScale < fineMinScale) break;
                     for (const tryRot of fineRotCandidates) {
                         if (placeTile(sx, sy, tryScale, tryRot)) {
@@ -2329,6 +2331,53 @@ function getToolDimensions(tool) {
         };
     }
     return { w: 50, h: 50 };
+}
+
+function getRenderDimensions(tool) {
+    const config = objectConfigs[tool];
+    if (config) {
+        const img = objectImages[tool];
+        let w = config.width || SPIKE_WIDTH;
+        let h = w;
+
+        const baseW = img ? (img.naturalWidth || img.width) : 0;
+        const baseH = img ? (img.naturalHeight || img.height) : 0;
+
+        if (img && img.complete && baseW !== 0) {
+            if (config.heightMode === 'aspect') {
+                h = baseH * (w / baseW);
+            } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
+                h = baseH;
+            }
+        }
+
+        return { w, h };
+    }
+    return { w: 50, h: 50 };
+}
+
+function getCompensatedRenderScale(tool, signedScale) {
+    const COMPENSATION_STRENGTH = 0.5;
+    const sign = signedScale < 0 ? -1 : 1;
+    const magnitude = Math.max(0.1, Math.abs(signedScale || 1));
+
+    if (magnitude === 1) {
+        return sign;
+    }
+
+    const renderDims = getRenderDimensions(tool);
+    const logicalDims = getToolDimensions(tool);
+    const ratioX = renderDims.w > 0 ? (logicalDims.w / renderDims.w) : 1;
+    const ratioY = renderDims.h > 0 ? (logicalDims.h / renderDims.h) : 1;
+    const growthRatio = Math.max(0.1, Math.min(3, (ratioX + ratioY) / 2));
+    const effectiveGrowthRatio = 1.06 + ((growthRatio - 1) * COMPENSATION_STRENGTH);
+
+    const compensatedMagnitude = 1 + ((magnitude - 1) * effectiveGrowthRatio);
+    return sign * compensatedMagnitude;
+}
+
+function getCompensatedScaleMagnitude(tool, signedScale) {
+    return Math.abs(getCompensatedRenderScale(tool, signedScale));
 }
 
 // Resize canvas
@@ -2612,11 +2661,12 @@ canvas.addEventListener('mousedown', (e) => {
             const clickedObj = getObjectAt(gameX, gameY);
             if (clickedObj && clickedObj.type !== 'finishLine' && objectConfigs[clickedObj.type]) {
                 const dims = getToolDimensions(clickedObj.type);
+                const gridScale = getCompensatedScaleMagnitude(clickedObj.type, clickedObj.s || 1);
                 activeGrid = {
                     cx: clickedObj.x,
                     cy: clickedObj.y,
-                    w: Math.max(1, dims.w * Math.abs(clickedObj.s || 1)),
-                    h: Math.max(1, dims.h * Math.abs(clickedObj.s || 1)),
+                    w: Math.max(1, dims.w * gridScale),
+                    h: Math.max(1, dims.h * gridScale),
                     rotation: clickedObj.rotation || 0
                 };
                 draw();
@@ -3169,21 +3219,17 @@ function draw() {
             }
             ctx.translate(obj.x, obj.y);
             ctx.rotate(obj.rotation * Math.PI / 180);
-            if (obj.s !== undefined && obj.s !== 1) ctx.scale(obj.s, obj.s);
+            if (obj.s !== undefined && obj.s !== 1) {
+                const compensatedScale = getCompensatedRenderScale(obj.type, obj.s);
+                ctx.scale(compensatedScale, compensatedScale);
+            }
 
             const img = objectImages[obj.type];
-            let w = config.width || SPIKE_WIDTH;
-            let h = w;
+            const dims = getRenderDimensions(obj.type);
+            const w = dims.w;
+            const h = dims.h;
 
-            let baseW = img ? (img.naturalWidth || img.width) : 0;
-            let baseH = img ? (img.naturalHeight || img.height) : 0;
-
-            if (img && img.complete && baseW !== 0) {
-                if (config.heightMode === 'aspect') {
-                    h = baseH * (w / baseW);
-                } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
-                    h = baseH;
-                }
+            if (img && img.complete) {
 
                 if (config.colorable) {
                     drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
@@ -3243,21 +3289,17 @@ function draw() {
 
         ctx.translate(previewX, previewY);
         ctx.rotate(previewRotation * Math.PI / 180);
-        if (previewScale !== 1) ctx.scale(previewScale, previewScale);
+        if (previewScale !== 1) {
+            const compensatedPreviewScale = getCompensatedRenderScale(currentTool, previewScale);
+            ctx.scale(compensatedPreviewScale, compensatedPreviewScale);
+        }
 
         const img = objectImages[currentTool];
-        let w = config.width || SPIKE_WIDTH;
-        let h = w;
+        const dims = getRenderDimensions(currentTool);
+        const w = dims.w;
+        const h = dims.h;
 
-        let baseW = img ? (img.naturalWidth || img.width) : 0;
-        let baseH = img ? (img.naturalHeight || img.height) : 0;
-
-        if (img && img.complete && baseW !== 0) {
-            if (config.heightMode === 'aspect') {
-                h = baseH * (w / baseW);
-            } else if (config.heightMode === 'native' || config.heightMode === undefined && !config.width) {
-                h = baseH;
-            }
+        if (img && img.complete) {
 
             if (config.colorable) {
                 drawTintedImage(ctx, img, levelConfig.lastUsedColor, -w / 2, -h / 2, w, h);
