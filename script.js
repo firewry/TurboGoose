@@ -6,6 +6,8 @@ const propPanel = document.getElementById('properties-panel');
 const propColorInput = document.getElementById('prop-blockColor');
 const propColorRow = document.getElementById('prop-color-row');
 const propFieldsContainer = document.getElementById('properties-fields');
+const movementDetailsEl = document.getElementById('movement-details');
+const movementFieldsContainer = document.getElementById('movement-fields');
 const leftPanel = document.getElementById('left-panel');
 const toggleLeftPanelBtn = document.getElementById('toggle-left-panel');
 const leftPanelDivider = document.getElementById('left-panel-divider');
@@ -30,6 +32,16 @@ let objectClipboard = [];
 const BASE_OBJECT_PROPERTY_DEFS = [
     { key: 'collison', label: 'Collison', type: 'checkbox', default: true }
 ];
+const MOVEMENT_EXCLUDED_TYPES = new Set(['thwompPipe', 'thwomp']);
+const MOVEMENT_PROPERTY_DEFS = [
+    { key: 'eM', label: 'Enable Movement', type: 'checkbox', default: false, section: 'movement' },
+    { key: 'mS', label: 'Move Speed', type: 'number', default: 5, step: 0.01, section: 'movement' },
+    { key: 'mA', label: 'Move Angle (deg)', type: 'number', default: -Math.PI / 2, step: 1, section: 'movement' },
+    { key: 'eMR', label: 'Enable Move Range', type: 'checkbox', default: false, section: 'movement' },
+    { key: 'mR', label: 'Move Range', type: 'number', default: 300, step: 1, section: 'movement' },
+    { key: 'rMR', label: 'Repeat Move Range', type: 'checkbox', default: false, section: 'movement' }
+];
+const MOVEMENT_PROPERTY_KEYS = new Set(MOVEMENT_PROPERTY_DEFS.map(def => def.key));
 
 const OBJECT_PROPERTY_DEFS = {
     catBullet: [
@@ -95,7 +107,27 @@ const OBJECT_PROPERTY_DEFS = {
 
 function getObjectPropertyDefs(type) {
     if (!type || type === 'finishLine') return [];
-    return [...BASE_OBJECT_PROPERTY_DEFS, ...(OBJECT_PROPERTY_DEFS[type] || [])];
+    const baseDefs = [...BASE_OBJECT_PROPERTY_DEFS, ...(OBJECT_PROPERTY_DEFS[type] || [])];
+    if (!MOVEMENT_EXCLUDED_TYPES.has(type)) {
+        return [...baseDefs, ...MOVEMENT_PROPERTY_DEFS];
+    }
+    return baseDefs;
+}
+
+function objectSupportsMovement(type) {
+    return !!type && type !== 'finishLine' && !MOVEMENT_EXCLUDED_TYPES.has(type);
+}
+
+function objectHasMovementEnabled(obj) {
+    return objectSupportsMovement(obj.type) && obj.eM === true;
+}
+
+function degreesToMovementRadians(deg) {
+    return ((Number(deg) || 0) - 90) * Math.PI / 180;
+}
+
+function movementRadiansToDegrees(rad) {
+    return ((Number(rad) || 0) * 180 / Math.PI) + 90;
 }
 
 function getToolOverride(tool, key) {
@@ -375,16 +407,9 @@ function deleteActiveLayer() {
     }
     runUndoableAction(() => {
         const removedId = layerState.activeId;
-        const removedIndex = layerState.items.findIndex(layer => layer.id === removedId);
         layerState.items = layerState.items.filter(layer => layer.id !== removedId);
 
-        const fallbackLayer = layerState.items[Math.min(Math.max(removedIndex, 0), layerState.items.length - 1)] || layerState.items[layerState.items.length - 1];
-        for (const obj of objects) {
-            if (obj.type === 'finishLine') continue;
-            if (obj.layerId === removedId && fallbackLayer) {
-                obj.layerId = fallbackLayer.id;
-            }
-        }
+        objects = objects.filter(obj => obj.type === 'finishLine' || obj.layerId !== removedId);
 
         ensureActiveLayerIsValid();
         sanitizeSelectionForActiveLayer();
@@ -399,6 +424,7 @@ function duplicateActiveLayer() {
     if (!active) return;
 
     runUndoableAction(() => {
+        const sourceLayerId = active.id;
         const id = layerState.nextId++;
         const copy = {
             id,
@@ -409,6 +435,19 @@ function duplicateActiveLayer() {
         const activeIndex = layerState.items.findIndex(layer => layer.id === active.id);
         const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
         layerState.items.splice(insertIndex, 0, copy);
+
+        // Duplicate all objects from the source layer into the new copied layer.
+        const duplicatedObjects = objects
+            .filter(obj => obj.type !== 'finishLine' && obj.layerId === sourceLayerId)
+            .map(obj => {
+                const clone = deepClone(obj);
+                assignLayerToObject(clone, id);
+                return clone;
+            });
+        if (duplicatedObjects.length > 0) {
+            objects.push(...duplicatedObjects);
+        }
+
         layerState.activeId = id;
         updateObjectLayerDepths();
         renderLayersUI();
@@ -931,6 +970,10 @@ let isBoxSelecting = false;
 let selectionBoxStart = { x: 0, y: 0 };
 let selectionBoxEnd = { x: 0, y: 0 };
 let lastDrag = { x: 0, y: 0 };
+let dragStartMouse = { x: 0, y: 0 };
+let dragAnchorStart = { x: 0, y: 0 };
+let dragLastAppliedOffset = { x: 0, y: 0 };
+let dragSelectionStartStates = [];
 
 let isTiling = false;
 let tileAnchor = { x: 0, y: 0 };
@@ -2459,7 +2502,7 @@ window.addEventListener('keydown', (e) => {
     }
 
     // Delete selected objects
-    if (e.key === 'Backspace' || e.key === 'Delete') {
+    if (e.key === 'Delete') {
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
                 objects = objects.filter(obj => !selectedObjects.includes(obj));
@@ -2684,6 +2727,14 @@ canvas.addEventListener('mousedown', (e) => {
                 }
                 isDraggingObjects = true;
                 lastDrag = { x: gameX, y: gameY };
+                dragStartMouse = { x: gameX, y: gameY };
+                dragAnchorStart = { x: clickedObj.x, y: clickedObj.y };
+                dragLastAppliedOffset = { x: 0, y: 0 };
+                dragSelectionStartStates = selectedObjects.map(obj => ({
+                    obj,
+                    x: obj.x,
+                    y: obj.y
+                }));
             } else {
                 selectedObjects = [];
                 markUndoDirty();
@@ -2814,15 +2865,28 @@ canvas.addEventListener('mousemove', (e) => {
             deleteLastPoint = { ...deleteCurrentPoint };
         }
     } else if (isDraggingObjects) {
-        const dx = gameX - lastDrag.x;
-        const dy = gameY - lastDrag.y;
-        if (dx !== 0 || dy !== 0) markUndoDirty();
-        selectedObjects.forEach(obj => {
-            obj.x += dx;
+        let dx = gameX - dragStartMouse.x;
+        let dy = gameY - dragStartMouse.y;
+
+        if (activeGrid && currentTool === 'none') {
+            const snappedAnchor = applyGridSnap(dragAnchorStart.x + dx, dragAnchorStart.y + dy);
+            dx = snappedAnchor.x - dragAnchorStart.x;
+            dy = snappedAnchor.y - dragAnchorStart.y;
+        }
+
+        if (dx !== dragLastAppliedOffset.x || dy !== dragLastAppliedOffset.y) {
+            markUndoDirty();
+            dragLastAppliedOffset = { x: dx, y: dy };
+        }
+
+        for (const startState of dragSelectionStartStates) {
+            const obj = startState.obj;
+            obj.x = startState.x + dx;
             if (obj.type !== 'finishLine') {
-                obj.y += dy;
+                obj.y = startState.y + dy;
             }
-        });
+        }
+
         lastDrag = { x: gameX, y: gameY };
     } else if (isBoxSelecting) {
         selectionBoxEnd = { x: gameX, y: gameY };
@@ -2881,6 +2945,7 @@ canvas.addEventListener('mouseup', (e) => {
             });
         }
         isDraggingObjects = false;
+        dragSelectionStartStates = [];
         isBoxSelecting = false;
         endUndoBatch();
         draw();
@@ -2916,6 +2981,7 @@ window.addEventListener('mouseup', () => {
         isTiling = false;
         placedTilesThisDrag.clear();
         isDraggingObjects = false;
+        dragSelectionStartStates = [];
         isBoxSelecting = false;
         endUndoBatch();
         draw();
@@ -3096,8 +3162,9 @@ function draw() {
         if (isLayerHiddenForObject(obj)) return;
         const config = objectConfigs[obj.type];
         if (config) {
+            const isDimmed = !isObjectEditableInCurrentLayer(obj);
             ctx.save();
-            if (!isObjectEditableInCurrentLayer(obj)) {
+            if (isDimmed) {
                 ctx.globalAlpha = 0.72;
             }
             ctx.translate(obj.x, obj.y);
@@ -3136,6 +3203,35 @@ function draw() {
                 ctx.strokeRect(-w / 2 - outlinePad, -h / 2 - outlinePad, w + outlinePad * 2, h + outlinePad * 2);
             }
             ctx.restore();
+
+            if (objectHasMovementEnabled(obj)) {
+                const moveAngle = Number(obj.mA) || 0;
+                const moveSpeed = Math.abs(Number(obj.mS) || 0);
+                const arrowLen = 26 + Math.min(42, moveSpeed * 3.5);
+                const endX = obj.x + Math.cos(moveAngle) * arrowLen;
+                const endY = obj.y + Math.sin(moveAngle) * arrowLen;
+                const headLen = 8;
+                const leftA = moveAngle + Math.PI * 0.82;
+                const rightA = moveAngle - Math.PI * 0.82;
+
+                ctx.save();
+                if (isDimmed) ctx.globalAlpha = 0.72;
+                ctx.strokeStyle = '#ffd166';
+                ctx.fillStyle = '#ffd166';
+                ctx.lineWidth = 2 / camera.zoom;
+                ctx.beginPath();
+                ctx.moveTo(obj.x, obj.y);
+                ctx.lineTo(endX, endY);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(endX, endY);
+                ctx.lineTo(endX + Math.cos(leftA) * headLen, endY + Math.sin(leftA) * headLen);
+                ctx.lineTo(endX + Math.cos(rightA) * headLen, endY + Math.sin(rightA) * headLen);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            }
         }
     });
 
@@ -3567,6 +3663,7 @@ exportBtn.addEventListener('click', () => {
             for (const [key, value] of Object.entries(obj)) {
                 if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'a' || key === 'layerId') continue;
                 if (value === undefined) continue;
+                if (MOVEMENT_PROPERTY_KEYS.has(key) && obj.eM !== true) continue;
                 if (key in exportedBullet) continue;
                 exportedBullet[key] = value;
             }
@@ -3591,6 +3688,7 @@ exportBtn.addEventListener('click', () => {
         for (const [key, value] of Object.entries(obj)) {
             if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'layerId') continue;
             if (value === undefined) continue;
+            if (MOVEMENT_PROPERTY_KEYS.has(key) && obj.eM !== true) continue;
             exportedObj[key] = value;
         }
         genericObjects.push(exportedObj);
@@ -3629,6 +3727,11 @@ exportBtn.addEventListener('click', () => {
 // Properties Panel Logic
 
 var propFieldsSignature = '';
+
+function getDefsForSection(defs, section) {
+    if (section === 'main') return defs.filter(def => (def.section || 'main') === 'main');
+    return defs.filter(def => (def.section || 'main') === section);
+}
 
 function getPropertyPanelContext() {
     if (currentTool !== 'none' && objectConfigs[currentTool]) {
@@ -3669,6 +3772,9 @@ function parsePropertyInputValue(def, rawValue) {
     if (def.type === 'number') {
         const parsed = Number(rawValue);
         if (!Number.isFinite(parsed)) return def.default;
+        if (def.key === 'mA') {
+            return degreesToMovementRadians(parsed);
+        }
         return parsed;
     }
     return rawValue;
@@ -3677,16 +3783,21 @@ function parsePropertyInputValue(def, rawValue) {
 function getContextPropertyValue(context, def) {
     if (context.mode === 'placing') {
         const override = getToolOverride(context.tool, def.key);
-        return override !== undefined ? override : def.default;
+        const value = override !== undefined ? override : def.default;
+        if (def.key === 'mA') return movementRadiansToDegrees(value);
+        return value;
     }
 
     if (context.mode === 'selected') {
         const withProperty = selectedObjects.filter(obj => !!getDefForObjectKey(obj.type, def.key));
         if (withProperty.length === 0) return def.default;
         const firstObj = withProperty[0];
-        return firstObj[def.key] !== undefined ? firstObj[def.key] : def.default;
+        const value = firstObj[def.key] !== undefined ? firstObj[def.key] : def.default;
+        if (def.key === 'mA') return movementRadiansToDegrees(value);
+        return value;
     }
 
+    if (def.key === 'mA') return movementRadiansToDegrees(def.default);
     return def.default;
 }
 
@@ -3696,8 +3807,16 @@ function renderPropertyInputs(context, defs) {
 
     propFieldsSignature = signature;
     propFieldsContainer.innerHTML = '';
+    if (movementFieldsContainer) movementFieldsContainer.innerHTML = '';
 
-    for (const def of defs) {
+    const mainDefs = getDefsForSection(defs, 'main');
+    const movementDefs = getDefsForSection(defs, 'movement');
+
+    if (movementDetailsEl) {
+        movementDetailsEl.style.display = movementDefs.length > 0 ? 'block' : 'none';
+    }
+
+    const renderDef = (def, container) => {
         const label = document.createElement('label');
         label.textContent = `${def.label}:`;
 
@@ -3722,19 +3841,37 @@ function renderPropertyInputs(context, defs) {
         input.dataset.propKey = def.key;
         input.dataset.propType = def.type;
         label.appendChild(input);
-        propFieldsContainer.appendChild(label);
+        container.appendChild(label);
+    };
+
+    for (const def of mainDefs) {
+        renderDef(def, propFieldsContainer);
+    }
+
+    if (movementFieldsContainer) {
+        for (const def of movementDefs) {
+            renderDef(def, movementFieldsContainer);
+        }
     }
 }
 
 function updatePropertyInputValues(context, defs) {
+    const movementEnabledDef = defs.find(def => def.key === 'eM');
+    const movementEnabled = movementEnabledDef ? (getContextPropertyValue(context, movementEnabledDef) !== false) : false;
+
     for (const def of defs) {
-        const input = propFieldsContainer.querySelector(`[data-prop-key="${def.key}"]`);
+        const input = propPanel.querySelector(`[data-prop-key="${def.key}"]`);
         if (!input || document.activeElement === input) continue;
         const value = getContextPropertyValue(context, def);
         if (def.type === 'checkbox') {
             input.checked = value !== false;
         } else {
             input.value = value ?? '';
+        }
+
+        if (def.section === 'movement' && def.key !== 'eM') {
+            input.disabled = !movementEnabled;
+            input.style.opacity = movementEnabled ? '1' : '0.5';
         }
     }
 }
@@ -3750,6 +3887,8 @@ function updatePropertiesPanel() {
     if (!isPlacingColor && !isSelectingColorItem && !hasAnyProps) {
         propPanel.classList.add('closed');
         propFieldsContainer.innerHTML = '';
+        if (movementFieldsContainer) movementFieldsContainer.innerHTML = '';
+        if (movementDetailsEl) movementDetailsEl.style.display = 'none';
         propFieldsSignature = '';
         return;
     }
@@ -3797,8 +3936,7 @@ propColorInput.addEventListener('input', (e) => {
     });
 });
 
-propFieldsContainer.addEventListener('input', (e) => {
-    const target = e.target;
+function handlePropertyInputChange(target) {
     const key = target.dataset ? target.dataset.propKey : null;
     if (!key) return;
 
@@ -3834,7 +3972,17 @@ propFieldsContainer.addEventListener('input', (e) => {
             if (changed) draw();
         }
     });
+}
+
+propFieldsContainer.addEventListener('input', (e) => {
+    handlePropertyInputChange(e.target);
 });
+
+if (movementFieldsContainer) {
+    movementFieldsContainer.addEventListener('input', (e) => {
+        handlePropertyInputChange(e.target);
+    });
+}
 
 // Initial draw
 draw();

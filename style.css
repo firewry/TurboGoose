@@ -381,8 +381,33 @@ canvas {
     gap: 12px;
 }
 
+#movement-details {
+    border: 1px solid #404040;
+    border-radius: 6px;
+    padding: 6px;
+    background: #252525;
+}
+
+#movement-details summary {
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    font-weight: bold;
+    color: #cfd4da;
+}
+
+#movement-fields {
+    display: flex;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+}
+
 #properties-fields input[type="number"],
-#properties-fields select {
+#properties-fields select,
+#movement-fields input[type="number"],
+#movement-fields select {
     background: #222;
     color: #00ffcc;
     border: 1px solid #555;
@@ -391,7 +416,8 @@ canvas {
     width: 86px;
 }
 
-#properties-fields input[type="checkbox"] {
+#properties-fields input[type="checkbox"],
+#movement-fields input[type="checkbox"] {
     width: 16px;
     height: 16px;
     accent-color: #00ffcc;
