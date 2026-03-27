@@ -176,6 +176,8 @@ async function loadObjectConfigs() {
                 previewRotation = 0;
                 previewScale = 1;
                 if (textToolState !== 'idle') cancelTextTool();
+                isDrawingBrush = false;
+                brushDraftPoints = [];
                 if (typeof updatePropertiesPanel === 'function') updatePropertiesPanel();
                 draw();
             });
@@ -362,6 +364,119 @@ let isDrawingLasso = false;
 let lassoDraftPoints = [];
 let lassoPolygon = [];
 let lastLassoPoint = null;
+
+// Brush Tool State
+let isDrawingBrush = false;
+let brushDraftPoints = [];
+let brushRadius = 30; // default radius
+
+function combineBrushWithLasso() {
+    if (brushDraftPoints.length === 0) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const padding = brushRadius + 20;
+
+    const allPoints = [...(lassoPolygon || []), ...brushDraftPoints];
+    if (allPoints.length === 0) return;
+
+    for (const p of allPoints) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+
+    minX -= padding;
+    maxX += padding;
+    minY -= padding;
+    maxY += padding;
+
+    const width = maxX - minX;
+    const height = maxY - minY;
+    if (width <= 0 || height <= 0) return;
+
+    // Cap scale so performance isn't destroyed by huge strokes
+    const MAX_DIM = 2000;
+    const maxLocalDim = Math.max(width, height);
+    const RENDER_SCALE = Math.min(2, MAX_DIM / maxLocalDim);
+
+    const pxW = Math.ceil(width * RENDER_SCALE);
+    const pxH = Math.ceil(height * RENDER_SCALE);
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = pxW;
+    offCanvas.height = pxH;
+    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+    // Draw existing selection
+    if (lassoPolygon && lassoPolygon.length >= 3) {
+        offCtx.fillStyle = '#ffffff';
+        offCtx.beginPath();
+        offCtx.moveTo((lassoPolygon[0].x - minX) * RENDER_SCALE, (lassoPolygon[0].y - minY) * RENDER_SCALE);
+        for (let i = 1; i < lassoPolygon.length; i++) {
+            offCtx.lineTo((lassoPolygon[i].x - minX) * RENDER_SCALE, (lassoPolygon[i].y - minY) * RENDER_SCALE);
+        }
+        offCtx.closePath();
+        offCtx.fill('evenodd'); 
+    }
+
+    // Draw new brush stroke
+    offCtx.strokeStyle = '#ffffff';
+    offCtx.lineWidth = brushRadius * 2 * RENDER_SCALE;
+    offCtx.lineCap = 'round';
+    offCtx.lineJoin = 'round';
+    offCtx.beginPath();
+    offCtx.moveTo((brushDraftPoints[0].x - minX) * RENDER_SCALE, (brushDraftPoints[0].y - minY) * RENDER_SCALE);
+    for (let i = 1; i < brushDraftPoints.length; i++) {
+        offCtx.lineTo((brushDraftPoints[i].x - minX) * RENDER_SCALE, (brushDraftPoints[i].y - minY) * RENDER_SCALE);
+    }
+    if (brushDraftPoints.length === 1) {
+        offCtx.lineTo((brushDraftPoints[0].x - minX) * RENDER_SCALE + 0.1, (brushDraftPoints[0].y - minY) * RENDER_SCALE);
+    }
+    offCtx.stroke();
+
+    const imageData = offCtx.getImageData(0, 0, pxW, pxH);
+    const data = imageData.data;
+    const grid = new Uint8Array(pxW * pxH);
+    for (let i = 0; i < pxW * pxH; i++) {
+        grid[i] = data[i * 4 + 3] >= 80 ? 1 : 0;
+    }
+
+    const contours = extractContours(grid, pxW, pxH);
+    
+    // Convert back to world space and simplify
+    const pixToWorldX = (px) => minX + px / RENDER_SCALE;
+    const pixToWorldY = (py) => minY + py / RENDER_SCALE;
+
+    let allSimplified = contours.map(c => simplifyPolygon(c.map(p => ({
+        x: pixToWorldX(p.x),
+        y: pixToWorldY(p.y)
+    })), 0.5));
+
+    if (allSimplified.length === 0) {
+        brushDraftPoints = [];
+        return;
+    }
+
+    // Stitch all detached contours together
+    const stitched = [];
+    const root = allSimplified[0][0];
+
+    for (let i = 0; i < allSimplified.length; i++) {
+        const poly = allSimplified[i];
+        if (i > 0) {
+            stitched.push(root, poly[0]);
+        }
+        stitched.push(...poly);
+        stitched.push(poly[0]);
+        if (i > 0) {
+            stitched.push(root);
+        }
+    }
+
+    lassoPolygon = stitched;
+    brushDraftPoints = [];
+}
 
 // Text Tool State
 let textToolState = 'idle'; // 'idle', 'editing', 'placed'
@@ -869,7 +984,7 @@ function polygonRectOverlap(polygon, rect) {
 
 function canPreviewLassoFillAt(x, y) {
     if (!lassoPolygon || lassoPolygon.length < 3) return false;
-    if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text') return false;
+    if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text' || currentTool === 'brush') return false;
     if (!objectConfigs[currentTool]) return false;
     return pointInPolygon({ x, y }, lassoPolygon);
 }
@@ -1727,6 +1842,17 @@ window.addEventListener('keydown', (e) => {
     }
 });
 
+
+window.addEventListener('wheel', (e) => {
+    if (currentTool === 'brush' && e.ctrlKey) {
+        e.preventDefault();
+        // Adjust brush radius
+        const delta = Math.sign(e.deltaY) * -2;
+        brushRadius = Math.max(5, Math.min(500, brushRadius + delta));
+        draw();
+    }
+}, { passive: false });
+
 // Canvas Interaction
 canvas.addEventListener('mouseenter', () => isMouseOnCanvas = true);
 canvas.addEventListener('mouseleave', () => {
@@ -1786,6 +1912,18 @@ canvas.addEventListener('mousedown', (e) => {
             textToolPosition = { x: gameX, y: gameY };
             textToolContent = '';
             lassoPolygon = [];
+            draw();
+            return;
+        }
+
+        if (currentTool === 'brush') {
+            if (!lassoPolygon || lassoPolygon.length === 0) {
+                // To allow a fresh start if they clicked outside or want a new base
+                // Actually they might just be appending.
+            }
+            beginUndoBatch();
+            isDrawingBrush = true;
+            brushDraftPoints = [{ x: gameX, y: gameY }];
             draw();
             return;
         }
@@ -1903,6 +2041,13 @@ canvas.addEventListener('mousemove', (e) => {
         textToolPosition.x = gameX - textMoveStartOffset.x;
         textToolPosition.y = gameY - textMoveStartOffset.y;
         draw();
+    } else if (isDrawingBrush) {
+        const nextPoint = { x: gameX, y: gameY };
+        const lastPt = brushDraftPoints[brushDraftPoints.length - 1];
+        if (distanceBetweenPoints(lastPt, nextPoint) >= 3) {
+            brushDraftPoints.push(nextPoint);
+        }
+        draw();
     } else if (isDrawingLasso) {
         const nextPoint = { x: gameX, y: gameY };
         if (!lastLassoPoint || distanceBetweenPoints(lastLassoPoint, nextPoint) >= 6) {
@@ -1990,6 +2135,11 @@ canvas.addEventListener('mouseup', (e) => {
         if (isMovingText) {
             isMovingText = false;
         }
+        if (isDrawingBrush) {
+            isDrawingBrush = false;
+            combineBrushWithLasso();
+            draw();
+        }
         if (isDrawingLasso) {
             isDrawingLasso = false;
             if (lassoDraftPoints.length >= 2) {
@@ -2038,6 +2188,10 @@ window.addEventListener('mouseup', () => {
             }
             lassoDraftPoints = [];
             lastLassoPoint = null;
+        }
+        if (isDrawingBrush) {
+            isDrawingBrush = false;
+            combineBrushWithLasso();
         }
         isTiling = false;
         placedTilesThisDrag.clear();
@@ -2358,6 +2512,42 @@ function draw() {
                 else { clearInterval(textBlinkTimer); textBlinkTimer = null; }
             }, 530);
         }
+    }
+
+    // Draw Brush Preview or Stroke
+    if (currentTool === 'brush' && isMouseOnCanvas && !isDrawingBrush && textToolState === 'idle') {
+        const cursorWorldX = previewX;
+        const cursorWorldY = previewY;
+        
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 209, 102, 0.5)';
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.2)';
+        ctx.lineWidth = 2 / camera.zoom;
+        ctx.beginPath();
+        ctx.arc(cursorWorldX, cursorWorldY, brushRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    if (isDrawingBrush && brushDraftPoints.length > 0) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 209, 102, 0.5)';
+        ctx.fillStyle = 'rgba(255, 209, 102, 0.2)';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = brushRadius * 2;
+        
+        ctx.beginPath();
+        ctx.moveTo(brushDraftPoints[0].x, brushDraftPoints[0].y);
+        for (let i = 1; i < brushDraftPoints.length; i++) {
+            ctx.lineTo(brushDraftPoints[i].x, brushDraftPoints[i].y);
+        }
+        if (brushDraftPoints.length === 1) {
+            ctx.lineTo(brushDraftPoints[0].x + 0.1, brushDraftPoints[0].y);
+        }
+        ctx.stroke();
+        ctx.restore();
     }
 
     const activeLassoPoints = isDrawingLasso ? lassoDraftPoints : lassoPolygon;
