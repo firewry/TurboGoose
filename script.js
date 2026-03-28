@@ -51,21 +51,21 @@ const OBJECT_PROPERTY_DEFS = {
         { key: 'sp', label: 'Bullet Speed', type: 'number', default: 4, step: 0.01 }
     ],
     thwomp: [
-        { key: 'uS', label: 'Up Speed', type: 'number', default: 91, step: 0.01 },
-        { key: 'dS', label: 'Down Speed', type: 'number', default: 121, step: 0.01 },
-        { key: 'mR', label: 'Move Range', type: 'number', default: 140, step: 0.01 },
-        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 4400, step: 1 },
-        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 3500, step: 1 },
-        { key: 'direction', label: 'Direction', type: 'select', default: 'down', options: ['up', 'down'] },
+        { key: 'uS', label: 'Up Speed', type: 'number', default: 30, step: 0.01 },
+        { key: 'dS', label: 'Down Speed', type: 'number', default: 200, step: 0.01 },
+        { key: 'mR', label: 'Move Range', type: 'number', default: 75, step: 0.01 },
+        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 1000, step: 1 },
+        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 1000, step: 1 },
+        { key: 'direction', label: 'Direction', type: 'select', default: 'up', options: ['up', 'down'] },
         { key: 'st', label: 'State', type: 'select', default: 'moving_down', options: ['moving_down', 'moving_up', 'waiting_top', 'waiting_bottom'] }
     ],
     thwompPipe: [
-        { key: 'uS', label: 'Up Speed', type: 'number', default: 91, step: 0.01 },
-        { key: 'dS', label: 'Down Speed', type: 'number', default: 121, step: 0.01 },
-        { key: 'mR', label: 'Move Range', type: 'number', default: 140, step: 0.01 },
-        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 4400, step: 1 },
-        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 3500, step: 1 },
-        { key: 'direction', label: 'Direction', type: 'select', default: 'down', options: ['up', 'down'] },
+        { key: 'uS', label: 'Up Speed', type: 'number', default: 0, step: 0.01 },
+        { key: 'dS', label: 'Down Speed', type: 'number', default: 0, step: 0.01 },
+        { key: 'mR', label: 'Move Range', type: 'number', default: 75, step: 0.01 },
+        { key: 'tD', label: 'Top Delay (ms)', type: 'number', default: 1000, step: 1 },
+        { key: 'bD', label: 'Bottom Delay (ms)', type: 'number', default: 1000, step: 1 },
+        { key: 'direction', label: 'Direction', type: 'select', default: 'up', options: ['up', 'down'] },
         { key: 'st', label: 'State', type: 'select', default: 'moving_down', options: ['moving_down', 'moving_up', 'waiting_top', 'waiting_bottom'] }
     ],
     tinyMushroom: [
@@ -550,7 +550,7 @@ function setupLeftPanelToggle() {
 }
 
 function getSignedScaleFromCollison(scale, collisonEnabled) {
-    const magnitude = Math.max(0.1, Math.abs(scale || 1));
+    const magnitude = Math.max(0.005, Math.abs(scale || 1));
     return collisonEnabled ? magnitude : -magnitude;
 }
 
@@ -1066,6 +1066,18 @@ function applyGridSnap(x, y) {
     return { x: snappedX, y: snappedY };
 }
 
+function extractContours(grid, width, height) {
+    // Backward-compatible wrapper for binary Uint8Array grids (used by brush tool)
+    // Convert binary grid to float alpha field for new marching squares pipeline
+    const alpha = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i++) {
+        alpha[i] = grid[i] ? 1.0 : 0.0;
+    }
+    
+    const segments = marchingSquaresSegments(alpha, width, height, 0.5);
+    return connectSegmentsIntoContours(segments);
+}
+
 function combineBrushWithLasso() {
     if (brushDraftPoints.length === 0) return;
 
@@ -1230,77 +1242,263 @@ function isPointOnTextTool(worldX, worldY) {
     return worldX >= bb.x && worldX <= bb.x + bb.w && worldY >= bb.y && worldY <= bb.y + bb.h;
 }
 
+// ── Gaussian blur (separable, 2-pass) on a Float32Array grid ──
+function gaussianBlurFloat(data, width, height, sigma) {
+    const radius = Math.ceil(sigma * 3);
+    const kernelSize = radius * 2 + 1;
+    const kernel = new Float32Array(kernelSize);
+    let kSum = 0;
+    for (let i = 0; i < kernelSize; i++) {
+        const d = i - radius;
+        kernel[i] = Math.exp(-(d * d) / (2 * sigma * sigma));
+        kSum += kernel[i];
+    }
+    for (let i = 0; i < kernelSize; i++) kernel[i] /= kSum;
+
+    // Horizontal pass
+    const temp = new Float32Array(width * height);
+    for (let y = 0; y < height; y++) {
+        const row = y * width;
+        for (let x = 0; x < width; x++) {
+            let v = 0;
+            for (let k = 0; k < kernelSize; k++) {
+                const sx = Math.min(width - 1, Math.max(0, x + k - radius));
+                v += data[row + sx] * kernel[k];
+            }
+            temp[row + x] = v;
+        }
+    }
+    // Vertical pass
+    const out = new Float32Array(width * height);
+    for (let x = 0; x < width; x++) {
+        for (let y = 0; y < height; y++) {
+            let v = 0;
+            for (let k = 0; k < kernelSize; k++) {
+                const sy = Math.min(height - 1, Math.max(0, y + k - radius));
+                v += temp[sy * width + x] * kernel[k];
+            }
+            out[y * width + x] = v;
+        }
+    }
+    return out;
+}
+
+// ── Marching Squares with linear interpolation (segment-soup → closed contours) ──
+function marchingSquaresSegments(field, width, height, threshold) {
+    // For each 2×2 cell, classify and emit interpolated line segments.
+    // Returns an array of segments, each segment = [{x,y},{x,y}].
+    const segs = [];
+
+    function interp(v1, v2, x1, y1, x2, y2) {
+        if (Math.abs(v2 - v1) < 1e-10) return { x: (x1 + x2) * 0.5, y: (y1 + y2) * 0.5 };
+        const t = Math.max(0, Math.min(1, (threshold - v1) / (v2 - v1)));
+        return { x: x1 + t * (x2 - x1), y: y1 + t * (y2 - y1) };
+    }
+
+    for (let y = 0; y < height - 1; y++) {
+        for (let x = 0; x < width - 1; x++) {
+            const tl = field[y * width + x];
+            const tr = field[y * width + x + 1];
+            const br = field[(y + 1) * width + x + 1];
+            const bl = field[(y + 1) * width + x];
+
+            const c =
+                (tl >= threshold ? 8 : 0) |
+                (tr >= threshold ? 4 : 0) |
+                (br >= threshold ? 2 : 0) |
+                (bl >= threshold ? 1 : 0);
+
+            if (c === 0 || c === 15) continue;
+
+            const top    = interp(tl, tr, x, y, x + 1, y);
+            const right  = interp(tr, br, x + 1, y, x + 1, y + 1);
+            const bottom = interp(bl, br, x, y + 1, x + 1, y + 1);
+            const left   = interp(tl, bl, x, y, x, y + 1);
+
+            switch (c) {
+                case  1: segs.push([left, bottom]); break;
+                case  2: segs.push([bottom, right]); break;
+                case  3: segs.push([left, right]); break;
+                case  4: segs.push([right, top]); break;
+                case  5: { // saddle BL+TR
+                    const avg = (tl + tr + br + bl) * 0.25;
+                    if (avg >= threshold) { segs.push([left, top]); segs.push([bottom, right]); }
+                    else                  { segs.push([left, bottom]); segs.push([right, top]); }
+                    break;
+                }
+                case  6: segs.push([bottom, top]); break;
+                case  7: segs.push([left, top]); break;
+                case  8: segs.push([top, left]); break;
+                case  9: segs.push([top, bottom]); break;
+                case 10: { // saddle TL+BR
+                    const avg = (tl + tr + br + bl) * 0.25;
+                    if (avg >= threshold) { segs.push([top, right]); segs.push([bottom, left]); }
+                    else                  { segs.push([top, left]); segs.push([bottom, right]); }
+                    break;
+                }
+                case 11: segs.push([top, right]); break;
+                case 12: segs.push([right, left]); break;
+                case 13: segs.push([right, bottom]); break;
+                case 14: segs.push([left, bottom]); break;
+            }
+        }
+    }
+    return segs;
+}
+
+// Connect a soup of line segments into closed contour loops.
+// Uses a spatial hash on endpoints so shared edge-crossing points are matched.
+function connectSegmentsIntoContours(segments) {
+    if (segments.length === 0) return [];
+
+    // Quantise coordinates to a grid key (segments from adjacent marching-squares
+    // cells share exact edge-crossing points, but floating-point may differ by ε).
+    const Q = 1e4; // quantisation factor
+    function key(p) { return `${Math.round(p.x * Q)},${Math.round(p.y * Q)}`; }
+
+    // Adjacency: for every endpoint, store list of { segIdx, otherEnd: point }
+    const adj = new Map();
+    function addAdj(p, segIdx, other) {
+        const k = key(p);
+        let list = adj.get(k);
+        if (!list) { list = []; adj.set(k, list); }
+        list.push({ segIdx, other });
+    }
+
+    for (let i = 0; i < segments.length; i++) {
+        const [a, b] = segments[i];
+        addAdj(a, i, b);
+        addAdj(b, i, a);
+    }
+
+    const used = new Uint8Array(segments.length);
+    const contours = [];
+
+    for (let i = 0; i < segments.length; i++) {
+        if (used[i]) continue;
+        // Walk forward from segment i
+        const loop = [];
+        let cur = segments[i][0];
+        let next = segments[i][1];
+        used[i] = 1;
+        loop.push(cur);
+
+        const startKey = key(cur);
+        let safety = segments.length + 2;
+
+        while (safety-- > 0) {
+            loop.push(next);
+            const nk = key(next);
+            if (nk === startKey) break; // closed loop
+
+            const list = adj.get(nk);
+            if (!list) break;
+
+            let found = false;
+            for (const entry of list) {
+                if (used[entry.segIdx]) continue;
+                used[entry.segIdx] = 1;
+                // The shared point is `next`; walk to the other end of that segment
+                const [sa, sb] = segments[entry.segIdx];
+                const otherEnd = (key(sa) === nk) ? sb : sa;
+                next = otherEnd;
+                found = true;
+                break;
+            }
+            if (!found) break;
+        }
+
+        if (loop.length >= 4) contours.push(loop);
+    }
+
+    return contours;
+}
+
 // Convert text to polygon using offscreen canvas + contour tracing
 function textToPolygon() {
     if (!textToolContent || textToolContent.trim() === '') return [];
 
-    // Render text to an offscreen canvas at high res
-    const RENDER_SCALE = 2; // render at 2x for better contour quality
+    // ── 1. Render text at adaptive high resolution ──
+    const MIN_RENDERED_SIZE = 300;
+    const RENDER_SCALE = Math.max(2, Math.ceil(MIN_RENDERED_SIZE / Math.max(1, textToolFontSize)));
     const fontSize = textToolFontSize * RENDER_SCALE;
+    const padding = Math.max(10, Math.ceil(fontSize * 0.12));
+
     const offCanvas = document.createElement('canvas');
     const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
-
     offCtx.font = `bold ${fontSize}px ${textToolFont}`;
     const metrics = offCtx.measureText(textToolContent);
-    const textW = Math.ceil(metrics.width) + 20;
-    const textH = Math.ceil(fontSize * 1.3) + 20;
+    const canvasW = Math.ceil(metrics.width) + padding * 2;
+    const canvasH = Math.ceil(fontSize * 1.4) + padding * 2;
+    offCanvas.width = canvasW;
+    offCanvas.height = canvasH;
 
-    offCanvas.width = textW;
-    offCanvas.height = textH;
-
-    // Clear and draw text
-    offCtx.clearRect(0, 0, textW, textH);
+    offCtx.clearRect(0, 0, canvasW, canvasH);
     offCtx.fillStyle = '#ffffff';
     offCtx.font = `bold ${fontSize}px ${textToolFont}`;
     offCtx.textBaseline = 'top';
-    offCtx.fillText(textToolContent, 10, 10);
+    offCtx.fillText(textToolContent, padding, padding);
 
-    // Get pixel data
-    const imageData = offCtx.getImageData(0, 0, textW, textH);
-    const data = imageData.data;
-
-    // Create binary grid (1 = filled, 0 = empty) based on alpha
-    const ALPHA_THRESHOLD = 80;
-    const grid = new Uint8Array(textW * textH);
-    for (let i = 0; i < textW * textH; i++) {
-        grid[i] = data[i * 4 + 3] >= ALPHA_THRESHOLD ? 1 : 0;
+    // ── 2. Extract alpha channel as normalised float [0,1] ──
+    const imageData = offCtx.getImageData(0, 0, canvasW, canvasH);
+    const raw = imageData.data;
+    const alpha = new Float32Array(canvasW * canvasH);
+    for (let i = 0; i < canvasW * canvasH; i++) {
+        alpha[i] = raw[i * 4 + 3] / 255.0;
     }
 
-    // Extract contour using marching squares
-    const contours = extractContours(grid, textW, textH);
+    // ── 3. Gaussian blur for smooth contours ──
+    const sigma = Math.max(1.2, RENDER_SCALE * 0.6);
+    const blurred = gaussianBlurFloat(alpha, canvasW, canvasH, sigma);
+
+    // ── 4. Marching squares with linear interpolation ──
+    const ISO_THRESHOLD = 0.35;
+    const segments = marchingSquaresSegments(blurred, canvasW, canvasH, ISO_THRESHOLD);
+    const contours = connectSegmentsIntoContours(segments);
     if (contours.length === 0) return [];
 
-    // Transform contour points from pixel space to world space
+    // ── 5. Transform to world space & simplify ──
     const { textW: worldTextW, textH: worldTextH } = getTextMetrics();
     const worldOriginX = textToolPosition.x - worldTextW / 2;
     const worldOriginY = textToolPosition.y - worldTextH;
+    const pixToWorldX = (px) => worldOriginX + (px - padding) / RENDER_SCALE;
+    const pixToWorldY = (py) => worldOriginY + (py - padding) / RENDER_SCALE;
 
-    // Scale from pixel coords to world coords cleanly
-    const pixToWorldX = (px) => worldOriginX + (px - 10) / RENDER_SCALE;
-    const pixToWorldY = (py) => worldOriginY + (py - 10) / RENDER_SCALE;
+    // Adaptive simplification: preserve more detail for small text
+    const tolerance = textToolFontSize < 40 ? 0.25
+                    : textToolFontSize < 100 ? 0.4
+                    : 0.6;
 
-    // Convert, simplify, and concatenate all contours
-    let allSimplified = contours.map(c => simplifyPolygon(c.map(p => ({
-        x: pixToWorldX(p.x),
-        y: pixToWorldY(p.y)
-    })), 0.5));
+    let worldContours = contours
+        .map(c => c.map(p => ({ x: pixToWorldX(p.x), y: pixToWorldY(p.y) })))
+        .map(c => simplifyPolygon(c, tolerance))
+        .filter(c => c.length >= 3);
 
-    if (allSimplified.length === 0) return [];
+    if (worldContours.length === 0) return [];
 
-    // Stitch all disconnected contours together into one continuous polygon using zero-width bridge segments
-    // This allows the single `lassoPolygon` state and fill algorithms to "see" multiple letters and inner holes 
-    // seamlessly, because connecting bridges effectively cross paths twice and have zero inner area.
+    // ── 6. Sort contours: largest (outer) first, then smaller (holes / inner) ──
+    function polyArea(pts) {
+        let a = 0;
+        for (let i = 0, n = pts.length; i < n; i++) {
+            const j = (i + 1) % n;
+            a += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+        }
+        return Math.abs(a) * 0.5;
+    }
+    worldContours.sort((a, b) => polyArea(b) - polyArea(a));
+
+    // ── 7. Stitch all contours into one polygon via zero-width bridges ──
     const stitched = [];
-    const root = allSimplified[0][0];
+    const root = worldContours[0][0];
 
-    for (let i = 0; i < allSimplified.length; i++) {
-        const poly = allSimplified[i];
+    for (let i = 0; i < worldContours.length; i++) {
+        const poly = worldContours[i];
         if (i > 0) {
             stitched.push(root);
             stitched.push(poly[0]);
         }
         stitched.push(...poly);
-        stitched.push(poly[0]); // explicitly close this sub-loop
+        stitched.push(poly[0]); // close sub-loop
         if (i > 0) {
             stitched.push(root);
         }
@@ -1309,112 +1507,8 @@ function textToPolygon() {
     return stitched;
 }
 
-// Marching squares contour extraction
-function extractContours(grid, width, height) {
-    const visited = new Uint8Array(width * height);
-    const contours = [];
-
-    // Find contour starting points (transitions from 0 to 1 horizontally)
-    for (let y = 0; y < height - 1; y++) {
-        for (let x = 0; x < width - 1; x++) {
-            const idx = y * width + x;
-            if (visited[idx]) continue;
-
-            // Check if this is a boundary cell
-            const tl = grid[idx];
-            const tr = grid[idx + 1];
-            const bl = grid[(y + 1) * width + x];
-            const br = grid[(y + 1) * width + x + 1];
-            const cellType = (tl << 3) | (tr << 2) | (br << 1) | bl;
-
-            if (cellType === 0 || cellType === 15) continue; // fully outside or fully inside
-
-            // Trace contour from this cell
-            const contour = traceContour(grid, width, height, x, y, visited);
-            if (contour && contour.length >= 6) {
-                contours.push(contour);
-            }
-        }
-    }
-
-    return contours;
-}
-
-function traceContour(grid, width, height, startX, startY, visited) {
-    const points = [];
-    let x = startX;
-    let y = startY;
-    let prevDir = -1; // direction we came from
-    const maxSteps = width * height;
-    let steps = 0;
-
-    do {
-        if (steps++ > maxSteps) break;
-
-        const idx = y * width + x;
-        if (x < 0 || x >= width - 1 || y < 0 || y >= height - 1) break;
-
-        visited[idx] = 1;
-
-        const tl = grid[idx];
-        const tr = grid[idx + 1];
-        const bl = grid[(y + 1) * width + x];
-        const br = grid[(y + 1) * width + x + 1];
-        const cellType = (tl << 3) | (tr << 2) | (br << 1) | bl;
-
-        // Get interpolated edge point for this cell
-        let px = x + 0.5;
-        let py = y + 0.5;
-
-        switch (cellType) {
-            case 1: case 14: px = x; py = y + 0.5; break;
-            case 2: case 13: px = x + 0.5; py = y + 1; break;
-            case 3: case 12: px = x; py = y + 0.5; break;
-            case 4: case 11: px = x + 1; py = y + 0.5; break;
-            case 6: case 9: px = x + 0.5; py = y + 1; break;
-            case 7: case 8: px = x; py = y + 0.5; break;
-            default: px = x + 0.5; py = y + 0.5; break;
-        }
-
-        points.push({ x: px, y: py });
-
-        // Determine next cell based on marching squares direction
-        let nextX = x;
-        let nextY = y;
-
-        switch (cellType) {
-            case 1: nextX--; break; // BL: down to left
-            case 2: nextY++; break; // BR: right to down
-            case 3: nextX--; break; // BL, BR: right to left
-            case 4: nextX++; break; // TR: up to right
-            case 5: // BL, TR
-                if (prevDir === 2) nextX--; else nextX++; break;
-            case 6: nextY++; break; // BR, TR: up to down
-            case 7: nextX--; break; // BL, BR, TR: up to left
-            case 8: nextY--; break; // TL: left to up
-            case 9: nextY--; break; // TL, BL: down to up
-            case 10: // TL, BR
-                if (prevDir === 3) nextY--; else nextY++; break;
-            case 11: nextY--; break; // TL, BL, BR: right to up
-            case 12: nextX++; break; // TL, TR: left to right
-            case 13: nextX++; break; // TL, TR, BL: down to right
-            case 14: nextY++; break; // TL, TR, BR: left to down
-            default: break;
-        }
-
-        if (nextX > x) prevDir = 1;      // moved right
-        else if (nextX < x) prevDir = 3; // moved left
-        else if (nextY > y) prevDir = 2; // moved down
-        else prevDir = 0;                // moved up
-
-        x = nextX;
-        y = nextY;
-
-        if (x === startX && y === startY) break;
-    } while (true);
-
-    return points;
-}
+// Legacy wrappers removed – extractContours / traceContour replaced by
+// marchingSquaresSegments + connectSegmentsIntoContours above.
 
 // Douglas-Peucker polygon simplification
 function simplifyPolygon(points, tolerance) {
@@ -2031,11 +2125,11 @@ function fillLassoWithCurrentTool() {
     const minTileDim = Math.min(tileW, tileH);
     const scanSpacing = Math.max(1.5, minTileDim * 0.15);
     const scaleSteps = [];
-    for (let s = 1.0; s >= 0.12; s -= 0.05) {
+    for (let s = 1.0; s >= 0.08; s -= 0.04) {
         scaleSteps.push(s);
     }
-    // Add very small steps for tight corners
-    scaleSteps.push(0.10, 0.08, 0.06, 0.04);
+    // Much smaller steps for fine details (0.03 down to 0.008)
+    scaleSteps.push(0.06, 0.04, 0.03, 0.025, 0.02, 0.015, 0.01, 0.008);
 
     // Build spatial index for faster coverage checks
     const cellSize = Math.max(tileW, tileH) * 1.5;
@@ -2400,7 +2494,12 @@ function getRenderDimensions(tool) {
 function getCompensatedRenderScale(tool, signedScale) {
     const COMPENSATION_STRENGTH = 0.4;
     const sign = signedScale < 0 ? -1 : 1;
-    const magnitude = Math.max(0.1, Math.abs(signedScale || 1));
+    const magnitude = Math.max(0.005, Math.abs(signedScale || 1));
+
+    // Keep downscaling linear so no object type gets an artificial minimum size.
+    if (magnitude < 1) {
+        return sign * magnitude;
+    }
 
     if (magnitude === 1) {
         return sign;
@@ -3129,9 +3228,9 @@ canvas.addEventListener('wheel', (e) => {
                         if (obj.type === 'finishLine') return;
                         const collisonEnabled = obj.collison !== false;
                         const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
-                        const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
+                        const nextMagnitude = Math.max(0.005, Math.abs(currentScale) * factor);
                         obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
-                        obj.s = Number(obj.s.toFixed(2));
+                        obj.s = Number(obj.s.toFixed(3));
                     });
                 } else {
                     let cx = 0;
@@ -3163,9 +3262,9 @@ canvas.addEventListener('wheel', (e) => {
 
                         const collisonEnabled = obj.collison !== false;
                         const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
-                        const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
+                        const nextMagnitude = Math.max(0.005, Math.abs(currentScale) * factor);
                         obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
-                        obj.s = Number(obj.s.toFixed(2));
+                        obj.s = Number(obj.s.toFixed(3));
                     });
                 }
                 draw();
@@ -3173,9 +3272,9 @@ canvas.addEventListener('wheel', (e) => {
         } else if (currentTool !== 'none') {
             runUndoableAction(() => {
                 const collisonEnabled = getToolOverride(currentTool, 'collison') !== false;
-                const nextMagnitude = Math.max(0.1, Math.abs(previewScale || 1) * factor);
+                const nextMagnitude = Math.max(0.005, Math.abs(previewScale || 1) * factor);
                 previewScale = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
-                previewScale = Number(previewScale.toFixed(2));
+                previewScale = Number(previewScale.toFixed(3));
                 draw();
             });
         }
