@@ -29,8 +29,11 @@ let layerState = {
 };
 let draggingLayerId = null;
 let objectClipboard = [];
+// Cache of base z values per layer id, computed by updateObjectLayerDepths()
+let layerBaseZCache = new Map();
 const BASE_OBJECT_PROPERTY_DEFS = [
-    { key: 'collison', label: 'Collison', type: 'checkbox', default: true }
+    { key: 'collison', label: 'Collison', type: 'checkbox', default: true },
+    { key: 'zIndex', label: 'Z Index', type: 'number', default: 0, step: 1 }
 ];
 const MOVEMENT_EXCLUDED_TYPES = new Set(['thwompPipe', 'thwomp']);
 const MOVEMENT_PROPERTY_DEFS = [
@@ -163,13 +166,47 @@ function assignLayerToObject(obj, layerId) {
     const fallback = getBottomLayer();
     const resolvedId = getLayerById(layerId) ? layerId : (fallback ? fallback.id : 1);
     obj.layerId = resolvedId;
-    obj.z = getLayerZById(resolvedId);
+    // Use cached base z if available, otherwise fall back to old formula
+    const baseZ = layerBaseZCache.has(resolvedId) ? layerBaseZCache.get(resolvedId) : getLayerZById(resolvedId);
+    const zIndexProp = Number(obj.zIndex) || 0;
+    obj.z = baseZ + zIndexProp;
 }
 
 function updateObjectLayerDepths() {
+    const n = layerState.items.length;
+    layerBaseZCache.clear();
+
+    if (n === 0) return;
+
+    // Process layers from bottom to top.
+    // layerState.items[n-1] = bottom layer, layerState.items[0] = top layer.
+    // Bottom layer base = 5 (prevLayerMaxZ starts at 4, so 4+1=5).
+    let prevLayerMaxZ = 4;
+
+    for (let i = n - 1; i >= 0; i--) {
+        const layer = layerState.items[i];
+        const baseZ = prevLayerMaxZ + 1;
+        layerBaseZCache.set(layer.id, baseZ);
+
+        // Find the max z value for objects in this layer to set the base for the layer above.
+        let maxZ = baseZ; // minimum (if no objects or all have zIndex=0)
+        for (const obj of objects) {
+            if (!obj || obj.type === 'finishLine') continue;
+            if (obj.layerId !== layer.id) continue;
+            const zIndexProp = Number(obj.zIndex) || 0;
+            const objZ = baseZ + zIndexProp;
+            if (objZ > maxZ) maxZ = objZ;
+        }
+
+        prevLayerMaxZ = maxZ;
+    }
+
+    // Second pass: update all object z values using the computed base z per layer.
     for (const obj of objects) {
         if (!obj || obj.type === 'finishLine') continue;
-        assignLayerToObject(obj, obj.layerId);
+        const baseZ = layerBaseZCache.has(obj.layerId) ? layerBaseZCache.get(obj.layerId) : getLayerZById(obj.layerId);
+        const zIndexProp = Number(obj.zIndex) || 0;
+        obj.z = baseZ + zIndexProp;
     }
 }
 
@@ -199,6 +236,8 @@ function normalizeLayerStateForObjects() {
             const targetIndex = Math.max(0, Math.min(layerState.items.length - 1, layerState.items.length - 1 - zIndex));
             assignLayerToObject(obj, layerState.items[targetIndex].id);
         }
+        // Recompute all z values now that layers are established.
+        updateObjectLayerDepths();
     } else {
         ensureActiveLayerIsValid();
         updateObjectLayerDepths();
@@ -1010,9 +1049,11 @@ function applyGridSnap(x, y) {
     const localX = dx * cos - dy * sin;
     const localY = dx * sin + dy * cos;
     
-    // Snap to grid intervals (width and height of the reference object)
-    const snappedLocalX = Math.round(localX / activeGrid.w) * activeGrid.w;
-    const snappedLocalY = Math.round(localY / activeGrid.h) * activeGrid.h;
+    // Snap to grid intervals with a slight overlap factor to prevent gaps
+    const snapW = activeGrid.w * 0.99;
+    const snapH = activeGrid.h * 0.99;
+    const snappedLocalX = Math.round(localX / snapW) * snapW;
+    const snappedLocalY = Math.round(localY / snapH) * snapH;
     
     // Rotate back to world space
     const invRad = activeGrid.rotation * Math.PI / 180;
@@ -2357,7 +2398,7 @@ function getRenderDimensions(tool) {
 }
 
 function getCompensatedRenderScale(tool, signedScale) {
-    const COMPENSATION_STRENGTH = 0.5;
+    const COMPENSATION_STRENGTH = 0.4;
     const sign = signedScale < 0 ? -1 : 1;
     const magnitude = Math.max(0.1, Math.abs(signedScale || 1));
 
@@ -2370,7 +2411,7 @@ function getCompensatedRenderScale(tool, signedScale) {
     const ratioX = renderDims.w > 0 ? (logicalDims.w / renderDims.w) : 1;
     const ratioY = renderDims.h > 0 ? (logicalDims.h / renderDims.h) : 1;
     const growthRatio = Math.max(0.1, Math.min(3, (ratioX + ratioY) / 2));
-    const effectiveGrowthRatio = 1.06 + ((growthRatio - 1) * COMPENSATION_STRENGTH);
+    const effectiveGrowthRatio = 1 + ((growthRatio - 1) * COMPENSATION_STRENGTH);
 
     const compensatedMagnitude = 1 + ((magnitude - 1) * effectiveGrowthRatio);
     return sign * compensatedMagnitude;
@@ -2434,6 +2475,20 @@ if (clearBtn) {
                 };
                 birdStart = { x: 100, y: 300 };
                 finishLineObj = { type: 'finishLine', x: 1200, y: 0 };
+                levelConfig = {
+                    scrollSpeed: 2.4,
+                    gravity: 0.4,
+                    floorEnabled: true,
+                    antigravity: false,
+                    yTrack: false,
+                    gradientTopColor: '#009dff',
+                    gradientBottomColor: '#c2ccff',
+                    lastUsedColor: '#ff0000'
+                };
+                toolPropertyOverrides = {};
+                if (editorContainer) {
+                    editorContainer.style.background = `linear-gradient(to bottom, ${levelConfig.gradientTopColor}, ${levelConfig.gradientBottomColor})`;
+                }
                 renderLayersUI();
                 draw();
             });
@@ -2665,8 +2720,8 @@ canvas.addEventListener('mousedown', (e) => {
                 activeGrid = {
                     cx: clickedObj.x,
                     cy: clickedObj.y,
-                    w: Math.max(1, dims.w * gridScale),
-                    h: Math.max(1, dims.h * gridScale),
+                    w: Math.max(1, dims.w * gridScale * 0.99),
+                    h: Math.max(1, dims.h * gridScale * 0.99),
                     rotation: clickedObj.rotation || 0
                 };
                 draw();
@@ -2878,8 +2933,8 @@ canvas.addEventListener('mousemove', (e) => {
         }
     } else if (isTiling) {
         const { dims, scale, rad } = getTilingMetrics(currentTool);
-        const cellW = dims.w * scale;
-        const cellH = dims.h * scale;
+        const cellW = dims.w * scale * 0.99;
+        const cellH = dims.h * scale * 0.99;
         
         // Unrotated offset from anchor
         const dx = gameX - tileAnchor.x;
@@ -4002,6 +4057,7 @@ function handlePropertyInputChange(target) {
 
         if (context.mode === 'selected') {
             let changed = false;
+            let needsZUpdate = false;
             for (const obj of selectedObjects) {
                 if (!getDefForObjectKey(obj.type, key)) continue;
                 if (!isObjectEditableInCurrentLayer(obj)) continue;
@@ -4009,8 +4065,14 @@ function handlePropertyInputChange(target) {
                 if (key === 'collison') {
                     obj.s = getSignedScaleFromCollison(obj.s || 1, newValue !== false);
                 }
+                if (key === 'zIndex') {
+                    needsZUpdate = true;
+                }
                 changed = true;
             }
+            // Recompute all layer z values when zIndex changes, since a lower layer's
+            // max z affects the base z of every layer above it.
+            if (needsZUpdate) updateObjectLayerDepths();
             if (changed) draw();
         }
     });
