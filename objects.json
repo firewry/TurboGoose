@@ -25,7 +25,7 @@
     "name": "Color Block",
     "icon": "assets/color_block.webp",
     "sprite": "assets/color_block.webp",
-    "width": 93,
+    "width": 83,
     "heightMode": "square",
     "colorable": true,
     "highlight": "#00ffcc",

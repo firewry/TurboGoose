@@ -3780,7 +3780,8 @@ exportBtn.addEventListener('click', () => {
             exportedObj.a = Number((obj.rotation * Math.PI / 180).toFixed(3));
         }
         if (obj.s && obj.s !== 1) {
-            exportedObj.s = obj.s;
+            const compensatedS = getCompensatedRenderScale(obj.type, obj.s);
+            exportedObj.s = Number(compensatedS.toFixed(3));
         }
         for (const [key, value] of Object.entries(obj)) {
             if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'layerId') continue;
