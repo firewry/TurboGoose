@@ -2630,11 +2630,6 @@ window.addEventListener('keydown', (e) => {
         
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
-                let cx = 0, cy = 0;
-                selectedObjects.forEach(obj => { cx += obj.x; cy += obj.y; });
-                cx /= selectedObjects.length;
-                cy /= selectedObjects.length;
-
                 let currentAngle = selectedObjects[0].rotation || 0;
                 let newAngle;
                 if (snapAmount > 0) {
@@ -2643,18 +2638,32 @@ window.addEventListener('keydown', (e) => {
                     newAngle = Math.ceil(currentAngle / 45) * 45 - 45;
                 }
                 let angleDelta = newAngle - currentAngle;
-                const rad = angleDelta * Math.PI / 180;
-                const cos = Math.cos(rad);
-                const sin = Math.sin(rad);
 
-                selectedObjects.forEach(obj => {
-                    if (obj.type === 'finishLine') return;
-                    let dx = obj.x - cx;
-                    let dy = obj.y - cy;
-                    obj.x = cx + (dx * cos - dy * sin);
-                    obj.y = cy + (dx * sin + dy * cos);
-                    obj.rotation = ((obj.rotation || 0) + angleDelta + 360) % 360;
-                });
+                if (e.shiftKey) {
+                    // Shift held: rotate each object individually around its own center
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        obj.rotation = ((obj.rotation || 0) + angleDelta + 360) % 360;
+                    });
+                } else {
+                    let cx = 0, cy = 0;
+                    selectedObjects.forEach(obj => { cx += obj.x; cy += obj.y; });
+                    cx /= selectedObjects.length;
+                    cy /= selectedObjects.length;
+
+                    const rad = angleDelta * Math.PI / 180;
+                    const cos = Math.cos(rad);
+                    const sin = Math.sin(rad);
+
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        let dx = obj.x - cx;
+                        let dy = obj.y - cy;
+                        obj.x = cx + (dx * cos - dy * sin);
+                        obj.y = cy + (dx * sin + dy * cos);
+                        obj.rotation = ((obj.rotation || 0) + angleDelta + 360) % 360;
+                    });
+                }
                 draw();
             });
         } else if (currentTool !== 'none') {
@@ -3114,39 +3123,51 @@ canvas.addEventListener('wheel', (e) => {
 
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
-                let cx = 0;
-                let cy = 0;
-                let count = 0;
+                if (e.shiftKey) {
+                    // Shift held: scale each object individually around its own center
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        const collisonEnabled = obj.collison !== false;
+                        const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
+                        const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
+                        obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
+                        obj.s = Number(obj.s.toFixed(2));
+                    });
+                } else {
+                    let cx = 0;
+                    let cy = 0;
+                    let count = 0;
 
-                selectedObjects.forEach(obj => {
-                    if (obj.type === 'finishLine') return;
-                    cx += obj.x;
-                    cy += obj.y;
-                    count++;
-                });
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        cx += obj.x;
+                        cy += obj.y;
+                        count++;
+                    });
 
-                if (count === 0) {
-                    draw();
-                    return;
+                    if (count === 0) {
+                        draw();
+                        return;
+                    }
+
+                    cx /= count;
+                    cy /= count;
+
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+
+                        const dx = obj.x - cx;
+                        const dy = obj.y - cy;
+                        obj.x = Number((cx + dx * factor).toFixed(2));
+                        obj.y = Number((cy + dy * factor).toFixed(2));
+
+                        const collisonEnabled = obj.collison !== false;
+                        const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
+                        const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
+                        obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
+                        obj.s = Number(obj.s.toFixed(2));
+                    });
                 }
-
-                cx /= count;
-                cy /= count;
-
-                selectedObjects.forEach(obj => {
-                    if (obj.type === 'finishLine') return;
-
-                    const dx = obj.x - cx;
-                    const dy = obj.y - cy;
-                    obj.x = Number((cx + dx * factor).toFixed(2));
-                    obj.y = Number((cy + dy * factor).toFixed(2));
-
-                    const collisonEnabled = obj.collison !== false;
-                    const currentScale = obj.s !== undefined ? obj.s : (collisonEnabled ? 1 : -1);
-                    const nextMagnitude = Math.max(0.1, Math.abs(currentScale) * factor);
-                    obj.s = getSignedScaleFromCollison(nextMagnitude, collisonEnabled);
-                    obj.s = Number(obj.s.toFixed(2));
-                });
                 draw();
             });
         } else if (currentTool !== 'none') {
@@ -3168,23 +3189,31 @@ canvas.addEventListener('wheel', (e) => {
         
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
-                let cx = 0, cy = 0;
-                selectedObjects.forEach(obj => { cx += obj.x; cy += obj.y; });
-                cx /= selectedObjects.length;
-                cy /= selectedObjects.length;
+                if (e.shiftKey) {
+                    // Shift held: rotate each object individually around its own center
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        obj.rotation = ((obj.rotation || 0) + amount + 360) % 360;
+                    });
+                } else {
+                    let cx = 0, cy = 0;
+                    selectedObjects.forEach(obj => { cx += obj.x; cy += obj.y; });
+                    cx /= selectedObjects.length;
+                    cy /= selectedObjects.length;
 
-                const rad = amount * Math.PI / 180;
-                const cos = Math.cos(rad);
-                const sin = Math.sin(rad);
+                    const rad = amount * Math.PI / 180;
+                    const cos = Math.cos(rad);
+                    const sin = Math.sin(rad);
 
-                selectedObjects.forEach(obj => {
-                    if (obj.type === 'finishLine') return;
-                    let dx = obj.x - cx;
-                    let dy = obj.y - cy;
-                    obj.x = cx + (dx * cos - dy * sin);
-                    obj.y = cy + (dx * sin + dy * cos);
-                    obj.rotation = ((obj.rotation || 0) + amount + 360) % 360;
-                });
+                    selectedObjects.forEach(obj => {
+                        if (obj.type === 'finishLine') return;
+                        let dx = obj.x - cx;
+                        let dy = obj.y - cy;
+                        obj.x = cx + (dx * cos - dy * sin);
+                        obj.y = cy + (dx * sin + dy * cos);
+                        obj.rotation = ((obj.rotation || 0) + amount + 360) % 360;
+                    });
+                }
                 draw();
             });
         } else if (currentTool !== 'none') {
