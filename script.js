@@ -24,6 +24,90 @@ const imageOverlayDropzone = document.getElementById('image-overlay-dropzone');
 const imageOverlayFileInput = document.getElementById('image-overlay-file-input');
 const imageOverlayCancelBtn = document.getElementById('image-overlay-cancel-btn');
 
+const FILL_TIMEOUT_MS = 120000;
+const FILL_UI_UPDATE_INTERVAL_MS = 80;
+const FILL_YIELD_EVERY_STEPS = 1800;
+const FILL_PLACEMENT_CHUNK = 120;
+
+let fillProgressOverlayEl = null;
+let fillProgressBarEl = null;
+let fillProgressTextEl = null;
+let fillProgressMetaEl = null;
+let isFillingLasso = false;
+
+function ensureFillProgressOverlay() {
+    if (fillProgressOverlayEl) return;
+
+    fillProgressOverlayEl = document.createElement('div');
+    fillProgressOverlayEl.style.position = 'fixed';
+    fillProgressOverlayEl.style.left = '50%';
+    fillProgressOverlayEl.style.top = '18px';
+    fillProgressOverlayEl.style.transform = 'translateX(-50%)';
+    fillProgressOverlayEl.style.zIndex = '99999';
+    fillProgressOverlayEl.style.minWidth = '320px';
+    fillProgressOverlayEl.style.maxWidth = '78vw';
+    fillProgressOverlayEl.style.padding = '12px 14px';
+    fillProgressOverlayEl.style.borderRadius = '10px';
+    fillProgressOverlayEl.style.background = 'rgba(12, 18, 23, 0.88)';
+    fillProgressOverlayEl.style.border = '1px solid rgba(115, 210, 255, 0.45)';
+    fillProgressOverlayEl.style.boxShadow = '0 10px 28px rgba(0, 0, 0, 0.45)';
+    fillProgressOverlayEl.style.backdropFilter = 'blur(6px)';
+    fillProgressOverlayEl.style.display = 'none';
+    fillProgressOverlayEl.style.pointerEvents = 'none';
+
+    fillProgressTextEl = document.createElement('div');
+    fillProgressTextEl.style.color = '#d8f7ff';
+    fillProgressTextEl.style.fontFamily = 'Segoe UI, Arial, sans-serif';
+    fillProgressTextEl.style.fontSize = '14px';
+    fillProgressTextEl.style.fontWeight = '600';
+    fillProgressTextEl.style.marginBottom = '7px';
+
+    const track = document.createElement('div');
+    track.style.width = '100%';
+    track.style.height = '8px';
+    track.style.borderRadius = '999px';
+    track.style.background = 'rgba(255, 255, 255, 0.18)';
+    track.style.overflow = 'hidden';
+
+    fillProgressBarEl = document.createElement('div');
+    fillProgressBarEl.style.height = '100%';
+    fillProgressBarEl.style.width = '0%';
+    fillProgressBarEl.style.background = 'linear-gradient(90deg, #5eead4, #38bdf8)';
+    fillProgressBarEl.style.transition = 'width 80ms linear';
+    track.appendChild(fillProgressBarEl);
+
+    fillProgressMetaEl = document.createElement('div');
+    fillProgressMetaEl.style.color = 'rgba(216, 247, 255, 0.86)';
+    fillProgressMetaEl.style.fontFamily = 'Segoe UI, Arial, sans-serif';
+    fillProgressMetaEl.style.fontSize = '12px';
+    fillProgressMetaEl.style.marginTop = '7px';
+
+    fillProgressOverlayEl.appendChild(fillProgressTextEl);
+    fillProgressOverlayEl.appendChild(track);
+    fillProgressOverlayEl.appendChild(fillProgressMetaEl);
+    document.body.appendChild(fillProgressOverlayEl);
+}
+
+function showFillProgress(statusText, placedCount, estimatedTarget, elapsedMs) {
+    ensureFillProgressOverlay();
+    fillProgressOverlayEl.style.display = 'block';
+
+    const total = Math.max(1, estimatedTarget || 1);
+    const pct = Math.max(0, Math.min(100, (placedCount / total) * 100));
+    fillProgressTextEl.textContent = `${statusText} - ${placedCount.toLocaleString()} blocks placed`;
+    fillProgressBarEl.style.width = `${pct.toFixed(1)}%`;
+    fillProgressMetaEl.textContent = `Estimated target: ${total.toLocaleString()} | Elapsed: ${(elapsedMs / 1000).toFixed(1)}s | Timeout: 120s`;
+}
+
+function hideFillProgress() {
+    if (!fillProgressOverlayEl) return;
+    fillProgressOverlayEl.style.display = 'none';
+}
+
+function yieldToUi() {
+    return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
 const toolPropertyOverrides = {};
 let layerState = {
     nextId: 2,
@@ -1956,6 +2040,7 @@ function pointInPolygon(point, polygon) {
 }
 
 function canPreviewLassoFillAt(x, y) {
+    if (isFillingLasso) return false;
     if (!lassoPolygon || lassoPolygon.length < 3) return false;
     if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text' || currentTool === 'brush' || currentTool === 'grid') return false;
     if (!objectConfigs[currentTool]) return false;
@@ -2125,7 +2210,7 @@ function buildRotatedRectFootprint(mask, worldW, worldH, rotationDeg) {
     };
 }
 
-function forEachRotatedLatticeCenter(mask, rotationDeg, stepXWorld, stepYWorld, phaseU, phaseV, callback) {
+function* iterateRotatedLatticeCenters(mask, rotationDeg, stepXWorld, stepYWorld, phaseU, phaseV) {
     const rad = rotationDeg * Math.PI / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
@@ -2171,9 +2256,7 @@ function forEachRotatedLatticeCenter(mask, rotationDeg, stepXWorld, stepYWorld, 
             const maskY = Math.round((worldY - mask.minY) * mask.scale);
 
             if (maskX < 0 || maskY < 0 || maskX >= mask.width || maskY >= mask.height) continue;
-
-            const keepGoing = callback(maskX, maskY);
-            if (keepGoing === false) return;
+            yield { maskX, maskY };
         }
     }
 }
@@ -2314,10 +2397,24 @@ function buildAdaptiveRotationCandidates(preferredDeg, baseDeg, visualW, visualH
     return out;
 }
 
-function fillLassoWithCurrentTool() {
-    if (!lassoPolygon || lassoPolygon.length < 3) return;
-    if (!objectConfigs[currentTool]) return;
-    if (isActiveLayerObjectLocked()) return;
+async function fillLassoWithCurrentTool() {
+    if (!lassoPolygon || lassoPolygon.length < 3) return { placed: 0, timedOut: false };
+    if (!objectConfigs[currentTool]) return { placed: 0, timedOut: false };
+    if (isActiveLayerObjectLocked()) return { placed: 0, timedOut: false };
+
+    const startedAt = performance.now();
+    let lastUiUpdateAt = startedAt;
+    let stepsSinceYield = 0;
+    let timedOut = false;
+    let placedCount = 0;
+
+    const checkTimeout = () => {
+        if ((performance.now() - startedAt) > FILL_TIMEOUT_MS) {
+            timedOut = true;
+            return true;
+        }
+        return false;
+    };
 
     const dims = getToolDimensions(currentTool);
     const baseRawScale = Math.max(0.005, Math.abs(previewScale || 1));
@@ -2333,18 +2430,40 @@ function fillLassoWithCurrentTool() {
     if (!mask || mask.insideCount === 0) return;
 
     const coveredMask = new Uint8Array(mask.width * mask.height);
-    const placements = [];
     let uncoveredCount = mask.insideCount;
 
     const baseAreaPx = Math.max(1, Math.round(baseW * mask.scale) * Math.round(baseH * mask.scale));
     const lowerBound = Math.max(1, Math.ceil(mask.insideCount / baseAreaPx));
     const maxObjects = Math.min(24000, Math.max(900, lowerBound * 14 + 450));
 
+    showFillProgress('Filling Selection', 0, maxObjects, performance.now() - startedAt);
+
+    const flushUi = async (forceDraw = false) => {
+        const now = performance.now();
+        if (!forceDraw && (now - lastUiUpdateAt) < FILL_UI_UPDATE_INTERVAL_MS) return;
+        lastUiUpdateAt = now;
+        showFillProgress('Filling Selection', placedCount, maxObjects, now - startedAt);
+        draw();
+        await yieldToUi();
+    };
+
+    const placeChunked = async (x, y, rotation, rawScale) => {
+        if (objects.length >= maxObjects) return false;
+        objects.push(createPlacedObject(currentTool, x, y, rotation, rawScale));
+        placedCount++;
+        markUndoDirty();
+
+        if (placedCount % FILL_PLACEMENT_CHUNK === 0) {
+            await flushUi(true);
+        }
+        return true;
+    };
+
     const minScaleFraction = Math.max(0.08, Math.min(0.35, 3 / Math.max(baseW, baseH)));
     const scaleFractions = buildScaleFractions(minScaleFraction);
 
     for (const fraction of scaleFractions) {
-        if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+        if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
 
         const rawScale = baseRawScale * fraction;
         const visualScale = getCompensatedScaleMagnitude(currentTool, rawScale);
@@ -2385,16 +2504,25 @@ function fillLassoWithCurrentTool() {
         const seenCenters = new Set();
 
         for (const [phaseU, phaseV] of phasePairs) {
-            if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+            if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
 
-            forEachRotatedLatticeCenter(mask, baseRotationDeg, stepX, stepY, phaseU, phaseV, (maskX, maskY) => {
-                if (placements.length >= maxObjects || uncoveredCount <= 0) return false;
+            for (const center of iterateRotatedLatticeCenters(mask, baseRotationDeg, stepX, stepY, phaseU, phaseV)) {
+                if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
+
+                stepsSinceYield++;
+                if (stepsSinceYield >= FILL_YIELD_EVERY_STEPS) {
+                    stepsSinceYield = 0;
+                    await flushUi(false);
+                }
+
+                const maskX = center.maskX;
+                const maskY = center.maskY;
 
                 const centerIndex = maskY * mask.width + maskX;
-                if (seenCenters.has(centerIndex)) return true;
+                if (seenCenters.has(centerIndex)) continue;
                 seenCenters.add(centerIndex);
 
-                if (!mask.inside[centerIndex]) return true;
+                if (!mask.inside[centerIndex]) continue;
 
                 const localPreferred = estimateUncoveredOrientation(mask, coveredMask, maskX, maskY, Math.max(6, Math.min(tileW, tileH) * mask.scale * 0.9), baseRotationDeg);
                 const angles = buildAdaptiveRotationCandidates(localPreferred, baseRotationDeg, tileW, tileH);
@@ -2412,31 +2540,30 @@ function fillLassoWithCurrentTool() {
                     }
                 }
 
-                if (!bestCandidate || bestGain < minGain) return true;
+                if (!bestCandidate || bestGain < minGain) continue;
 
                 const gained = applyPlacementCoverage(mask, coveredMask, centerIndex, bestCandidate.footprint);
-                if (gained <= 0) return true;
+                if (gained <= 0) continue;
 
                 uncoveredCount -= gained;
-                placements.push({
-                    x: Number((mask.minX + maskX / mask.scale).toFixed(2)),
-                    y: Number((mask.minY + maskY / mask.scale).toFixed(2)),
-                    rawScale: Number(rawScale.toFixed(3)),
-                    rotation: Number(bestCandidate.angle.toFixed(2))
-                });
-
-                return true;
-            });
+                const ok = await placeChunked(
+                    Number((mask.minX + maskX / mask.scale).toFixed(2)),
+                    Number((mask.minY + maskY / mask.scale).toFixed(2)),
+                    Number(bestCandidate.angle.toFixed(2)),
+                    Number(rawScale.toFixed(3))
+                );
+                if (!ok) break;
+            }
         }
     }
 
     // Fallback pass: directly target remaining uncovered pixels with the
     // smallest scales discovered above.
-    if (uncoveredCount > 0 && placements.length < maxObjects) {
+    if (uncoveredCount > 0 && objects.length < maxObjects && !timedOut) {
         const fallbackFractions = scaleFractions.slice(-Math.min(3, scaleFractions.length));
 
         for (const fraction of fallbackFractions) {
-            if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+            if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
 
             const rawScale = baseRawScale * fraction;
             const visualScale = getCompensatedScaleMagnitude(currentTool, rawScale);
@@ -2459,9 +2586,15 @@ function fillLassoWithCurrentTool() {
             const stride = fraction <= fallbackFractions[fallbackFractions.length - 1] ? 1 : 2;
 
             for (let y = 0; y < mask.height; y += stride) {
-                if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+                if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
                 for (let x = 0; x < mask.width; x += stride) {
-                    if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+                    if (objects.length >= maxObjects || uncoveredCount <= 0 || checkTimeout()) break;
+
+                    stepsSinceYield++;
+                    if (stepsSinceYield >= FILL_YIELD_EVERY_STEPS) {
+                        stepsSinceYield = 0;
+                        await flushUi(false);
+                    }
 
                     const centerIndex = y * mask.width + x;
                     if (!mask.inside[centerIndex] || coveredMask[centerIndex]) continue;
@@ -2487,23 +2620,25 @@ function fillLassoWithCurrentTool() {
                     if (gained <= 0) continue;
 
                     uncoveredCount -= gained;
-                    placements.push({
-                        x: Number((mask.minX + x / mask.scale).toFixed(2)),
-                        y: Number((mask.minY + y / mask.scale).toFixed(2)),
-                        rawScale: Number(rawScale.toFixed(3)),
-                        rotation: Number(bestCandidate.angle.toFixed(2))
-                    });
+                    const ok = await placeChunked(
+                        Number((mask.minX + x / mask.scale).toFixed(2)),
+                        Number((mask.minY + y / mask.scale).toFixed(2)),
+                        Number(bestCandidate.angle.toFixed(2)),
+                        Number(rawScale.toFixed(3))
+                    );
+                    if (!ok) break;
                 }
             }
         }
     }
 
-    if (placements.length === 0) return;
+    await flushUi(true);
 
-    for (const placement of placements) {
-        const placementRotation = Number((placement.rotation ?? baseRotationDeg).toFixed(2));
-        objects.push(createPlacedObject(currentTool, placement.x, placement.y, placementRotation, placement.rawScale));
+    if (timedOut) {
+        return { placed: placedCount, timedOut: true };
     }
+
+    return { placed: placedCount, timedOut: false };
 }
 
 function forEachTileCell(targetGridX, targetGridY, squareMode, callback) {
@@ -3205,6 +3340,8 @@ canvas.addEventListener('mouseleave', () => {
 });
 
 canvas.addEventListener('mousedown', (e) => {
+    if (isFillingLasso) return;
+
     if (e.button === 1) { // Middle click for panning
         isPanning = true;
         startPan = { x: e.clientX - camera.x, y: e.clientY - camera.y };
@@ -3330,10 +3467,25 @@ canvas.addEventListener('mousedown', (e) => {
 
         if (lassoPolygon.length >= 3) {
             if (currentTool !== 'none' && canPreviewLassoFillAt(gameX, gameY)) {
-                runUndoableAction(() => {
-                    fillLassoWithCurrentTool();
-                    draw();
-                });
+                beginUndoBatch();
+                isFillingLasso = true;
+                showFillProgress('Filling Selection', 0, 1, 0);
+                fillLassoWithCurrentTool()
+                    .then((result) => {
+                        if (result && result.timedOut) {
+                            alert(`Fill stopped after 2 minutes. ${result.placed.toLocaleString()} blocks were placed before timeout.`);
+                        }
+                    })
+                    .catch((err) => {
+                        console.error('Lasso fill failed:', err);
+                        alert('Fill failed due to an internal error.');
+                    })
+                    .finally(() => {
+                        isFillingLasso = false;
+                        hideFillProgress();
+                        endUndoBatch();
+                        draw();
+                    });
                 return;
             }
 
@@ -4252,18 +4404,27 @@ function draw() {
 
         ctx.strokeStyle = 'rgba(0, 255, 255, 0.45)';
         ctx.lineWidth = 2 / camera.zoom;
-        const spacing = 14 / camera.zoom;
+        let spacing = 14 / camera.zoom;
         const minX = Math.min(...lassoPolygon.map(point => point.x)) - 100;
         const maxX = Math.max(...lassoPolygon.map(point => point.x)) + 100;
         const minY = Math.min(...lassoPolygon.map(point => point.y)) - 100;
         const maxY = Math.max(...lassoPolygon.map(point => point.y)) + 100;
+        const spanY = (maxY - minY);
+        const hatchStartX = minX - spanY;
+        const hatchEndX = maxX + spanY;
 
-        for (let x = minX - (maxY - minY); x <= maxX + (maxY - minY); x += spacing) {
-            ctx.beginPath();
-            ctx.moveTo(x, minY);
-            ctx.lineTo(x + (maxY - minY), maxY);
-            ctx.stroke();
+        const maxLines = 520;
+        const estimatedLines = Math.max(1, (hatchEndX - hatchStartX) / Math.max(0.001, spacing));
+        if (estimatedLines > maxLines) {
+            spacing = (hatchEndX - hatchStartX) / maxLines;
         }
+
+        ctx.beginPath();
+        for (let x = hatchStartX; x <= hatchEndX; x += spacing) {
+            ctx.moveTo(x, minY);
+            ctx.lineTo(x + spanY, maxY);
+        }
+        ctx.stroke();
 
         ctx.restore();
     }
