@@ -23,6 +23,8 @@ const imageOverlayModal = document.getElementById('image-overlay-modal');
 const imageOverlayDropzone = document.getElementById('image-overlay-dropzone');
 const imageOverlayFileInput = document.getElementById('image-overlay-file-input');
 const imageOverlayCancelBtn = document.getElementById('image-overlay-cancel-btn');
+const objectCountDisplayEl = document.getElementById('object-count-display');
+const objectCountValueEl = document.getElementById('object-count-value');
 
 const FILL_TIMEOUT_MS = 120000;
 const FILL_UI_UPDATE_INTERVAL_MS = 80;
@@ -34,6 +36,39 @@ let fillProgressBarEl = null;
 let fillProgressTextEl = null;
 let fillProgressMetaEl = null;
 let isFillingLasso = false;
+let lastObjectCountDisplay = { count: -1, tier: '' };
+
+function getPlacedObjectCount() {
+    return objects.reduce((count, obj) => count + (obj.type === 'finishLine' ? 0 : 1), 0);
+}
+
+function formatObjectCount(value) {
+    if (value >= 1000) {
+        const asK = Math.round((value / 1000) * 10) / 10;
+        const trimmed = Number.isInteger(asK) ? String(asK) : asK.toFixed(1);
+        return `${trimmed}k`;
+    }
+    return String(value);
+}
+
+function updateObjectCountDisplay() {
+    if (!objectCountDisplayEl || !objectCountValueEl) return;
+
+    const count = getPlacedObjectCount();
+    let tier = '';
+    if (count >= 2500) {
+        tier = 'danger';
+    } else if (count >= 2000) {
+        tier = 'warn';
+    }
+
+    if (lastObjectCountDisplay.count === count && lastObjectCountDisplay.tier === tier) return;
+
+    objectCountValueEl.textContent = formatObjectCount(count);
+    objectCountDisplayEl.classList.toggle('warn', tier === 'warn');
+    objectCountDisplayEl.classList.toggle('danger', tier === 'danger');
+    lastObjectCountDisplay = { count, tier };
+}
 
 function ensureFillProgressOverlay() {
     if (fillProgressOverlayEl) return;
@@ -4013,6 +4048,7 @@ function getObjectIndexAt(x, y) {
 // Drawing
 function draw() {
     try {
+        updateObjectCountDisplay();
         ctx.imageSmoothingEnabled = false;
         ctx.clearRect(0, 0, width, height);
 

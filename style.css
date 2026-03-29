@@ -266,6 +266,41 @@ canvas {
     gap: 10px;
 }
 
+.object-count-display {
+    width: 190px;
+    margin: 0 0 10px 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #2b2f35;
+    border: 1px solid #3e4650;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-sizing: border-box;
+}
+
+.object-count-label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #aeb7c2;
+    font-weight: 700;
+}
+
+.object-count-value {
+    font-size: 15px;
+    color: #e8edf3;
+    font-weight: 800;
+}
+
+.object-count-display.warn .object-count-value {
+    color: #ffa341;
+}
+
+.object-count-display.danger .object-count-value {
+    color: #ff5c5c;
+}
+
 .tool-btn, #export-btn {
     width: 40px;
     height: 40px;
