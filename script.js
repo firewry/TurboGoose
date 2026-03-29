@@ -25,6 +25,14 @@ const imageOverlayFileInput = document.getElementById('image-overlay-file-input'
 const imageOverlayCancelBtn = document.getElementById('image-overlay-cancel-btn');
 const objectCountDisplayEl = document.getElementById('object-count-display');
 const objectCountValueEl = document.getElementById('object-count-value');
+const layerContextMenuEl = document.getElementById('layer-context-menu');
+const overlayConvertPanelEl = document.getElementById('overlay-convert-panel');
+const overlayConvertResolutionEl = document.getElementById('overlay-convert-resolution');
+const overlayConvertResolutionValueEl = document.getElementById('overlay-convert-resolution-value');
+const overlayConvertCountEl = document.getElementById('overlay-convert-count');
+const overlayConvertStatusEl = document.getElementById('overlay-convert-status');
+const overlayConvertCancelBtn = document.getElementById('overlay-convert-cancel');
+const overlayConvertApplyBtn = document.getElementById('overlay-convert-apply');
 
 const FILL_TIMEOUT_MS = 120000;
 const FILL_UI_UPDATE_INTERVAL_MS = 80;
@@ -156,7 +164,24 @@ let objectClipboard = [];
 const OVERLAY_MIN_SCALE = 0.05;
 const OVERLAY_MAX_SCALE = 20;
 const OVERLAY_ALPHA = 0.48;
+const OVERLAY_CONVERT_MIN_RES = 12;
+const OVERLAY_CONVERT_MAX_RES = 140;
+const OVERLAY_CONVERT_TARGET_TOOL = 'colorBlock';
+const OVERLAY_CONVERT_PROGRESS_CHUNK = 120;
+const FAST_COLORABLE_RENDER_THRESHOLD = 1200;
+const FAST_COLORABLE_TYPES = new Set(['colorBlock', 'colorTile']);
 const overlayImageCache = new Map();
+const overlayImageDataCache = new Map();
+let layerContextMenuLayerId = null;
+const overlayConvertState = {
+    isOpen: false,
+    layerId: null,
+    resolution: 52,
+    estimatedCount: 0,
+    previewBlocks: [],
+    recomputeToken: 0,
+    isConverting: false
+};
 // Cache of base z values per layer id, computed by updateObjectLayerDepths()
 let layerBaseZCache = new Map();
 const BASE_OBJECT_PROPERTY_DEFS = [
@@ -332,10 +357,267 @@ function getOverlayImageForLayer(layer) {
     return img;
 }
 
+function getOverlayImageDataForLayer(layer) {
+    if (!isOverlayLayer(layer) || !layer.overlay || !layer.overlay.src) return null;
+    const src = layer.overlay.src;
+    if (overlayImageDataCache.has(src)) {
+        return overlayImageDataCache.get(src);
+    }
+
+    const img = getOverlayImageForLayer(layer);
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+
+    try {
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = img.naturalWidth;
+        offCanvas.height = img.naturalHeight;
+        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+        offCtx.imageSmoothingEnabled = false;
+        offCtx.drawImage(img, 0, 0);
+        const imageData = offCtx.getImageData(0, 0, offCanvas.width, offCanvas.height);
+        const out = {
+            width: offCanvas.width,
+            height: offCanvas.height,
+            data: imageData.data
+        };
+        overlayImageDataCache.set(src, out);
+        return out;
+    } catch (err) {
+        return null;
+    }
+}
+
 function getActiveOverlayData() {
     const active = getActiveLayer();
     if (!isOverlayLayer(active) || !active.overlay || !active.overlay.src) return null;
     return active.overlay;
+}
+
+function hideLayerContextMenu() {
+    if (!layerContextMenuEl) return;
+    layerContextMenuEl.classList.add('hidden');
+    layerContextMenuLayerId = null;
+}
+
+function showLayerContextMenuForLayer(layerId, clientX, clientY) {
+    if (!layerContextMenuEl) return;
+    const layer = getLayerById(layerId);
+    if (!layer) return;
+
+    layerContextMenuLayerId = layerId;
+    layerContextMenuEl.classList.remove('hidden');
+
+    const convertBtn = layerContextMenuEl.querySelector('button[data-action="convert"]');
+    if (convertBtn) {
+        convertBtn.style.display = isOverlayLayer(layer) ? '' : 'none';
+    }
+
+    const menuRect = layerContextMenuEl.getBoundingClientRect();
+    const pad = 8;
+    const maxX = window.innerWidth - menuRect.width - pad;
+    const maxY = window.innerHeight - menuRect.height - pad;
+    layerContextMenuEl.style.left = `${Math.max(pad, Math.min(clientX, maxX))}px`;
+    layerContextMenuEl.style.top = `${Math.max(pad, Math.min(clientY, maxY))}px`;
+}
+
+function getConvertScaleFromResolution(resolution) {
+    const normalized = clamp((resolution - OVERLAY_CONVERT_MIN_RES) / (OVERLAY_CONVERT_MAX_RES - OVERLAY_CONVERT_MIN_RES), 0, 1);
+    return Number((1.35 - (normalized * 1.15)).toFixed(3));
+}
+
+function sampleOverlayToBlockList(layer, resolution, maxCount = 35000) {
+    if (!isOverlayLayer(layer) || !layer.overlay) return [];
+    const overlay = layer.overlay;
+    const imageData = getOverlayImageDataForLayer(layer);
+    if (!imageData) return [];
+    if (!objectConfigs[OVERLAY_CONVERT_TARGET_TOOL]) return [];
+
+    const dims = getToolDimensions(OVERLAY_CONVERT_TARGET_TOOL);
+    const scale = getConvertScaleFromResolution(resolution);
+    const stepX = Math.max(1, dims.w * scale);
+    const stepY = Math.max(1, dims.h * scale);
+
+    const drawW = imageData.width * Math.max(OVERLAY_MIN_SCALE, Number(overlay.scale) || 1);
+    const drawH = imageData.height * Math.max(OVERLAY_MIN_SCALE, Number(overlay.scale) || 1);
+    const cols = Math.max(1, Math.floor(drawW / stepX));
+    const rows = Math.max(1, Math.floor(drawH / stepY));
+    const rot = (Number(overlay.rotation) || 0) * Math.PI / 180;
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+
+    const blocks = [];
+    for (let row = 0; row < rows; row++) {
+        const localY = (-drawH / 2) + ((row + 0.5) * stepY);
+        const srcY = Math.max(0, Math.min(imageData.height - 1, Math.floor(((localY + drawH / 2) / drawH) * imageData.height)));
+
+        for (let col = 0; col < cols; col++) {
+            if (blocks.length >= maxCount) return blocks;
+
+            const localX = (-drawW / 2) + ((col + 0.5) * stepX);
+            const srcX = Math.max(0, Math.min(imageData.width - 1, Math.floor(((localX + drawW / 2) / drawW) * imageData.width)));
+            const pxIndex = ((srcY * imageData.width) + srcX) * 4;
+            const alpha = imageData.data[pxIndex + 3];
+            if (alpha < 52) continue;
+
+            const worldX = (overlay.x || 0) + (localX * cos - localY * sin);
+            const worldY = (overlay.y || 0) + (localX * sin + localY * cos);
+            blocks.push({
+                x: Number(worldX.toFixed(2)),
+                y: Number(worldY.toFixed(2)),
+                color: rgbToHex(imageData.data[pxIndex], imageData.data[pxIndex + 1], imageData.data[pxIndex + 2]),
+                scale
+            });
+        }
+    }
+
+    return blocks;
+}
+
+function updateOverlayConvertMeta() {
+    if (!overlayConvertCountEl || !overlayConvertResolutionValueEl) return;
+    overlayConvertResolutionValueEl.textContent = String(overlayConvertState.resolution);
+    overlayConvertCountEl.textContent = `Estimated blocks: ${overlayConvertState.estimatedCount.toLocaleString()}`;
+}
+
+function setOverlayConvertStatus(text) {
+    if (!overlayConvertStatusEl) return;
+    overlayConvertStatusEl.textContent = text || '';
+}
+
+function scheduleOverlayConvertPreview() {
+    if (!overlayConvertState.isOpen || overlayConvertState.layerId === null) return;
+
+    const token = ++overlayConvertState.recomputeToken;
+    setOverlayConvertStatus('Previewing...');
+
+    requestAnimationFrame(() => {
+        if (token !== overlayConvertState.recomputeToken) return;
+        const layer = getLayerById(overlayConvertState.layerId);
+        if (!layer || !isOverlayLayer(layer)) {
+            closeOverlayConvertPanel();
+            return;
+        }
+
+        const blocks = sampleOverlayToBlockList(layer, overlayConvertState.resolution, 16000);
+        overlayConvertState.previewBlocks = blocks;
+        overlayConvertState.estimatedCount = blocks.length;
+        updateOverlayConvertMeta();
+        setOverlayConvertStatus(blocks.length >= 16000 ? 'Preview capped for performance' : 'Live preview');
+        draw();
+    });
+}
+
+function closeOverlayConvertPanel() {
+    overlayConvertState.isOpen = false;
+    overlayConvertState.layerId = null;
+    overlayConvertState.previewBlocks = [];
+    overlayConvertState.estimatedCount = 0;
+    overlayConvertState.recomputeToken++;
+    if (overlayConvertPanelEl) overlayConvertPanelEl.classList.add('hidden');
+    setOverlayConvertStatus('');
+    draw();
+}
+
+function openOverlayConvertPanel(layerId) {
+    const layer = getLayerById(layerId);
+    if (!layer || !isOverlayLayer(layer)) return;
+
+    layerState.activeId = layer.id;
+    sanitizeSelectionForActiveLayer();
+    renderLayersUI();
+
+    overlayConvertState.isOpen = true;
+    overlayConvertState.layerId = layer.id;
+    overlayConvertState.resolution = clamp(Number(overlayConvertResolutionEl ? overlayConvertResolutionEl.value : 52), OVERLAY_CONVERT_MIN_RES, OVERLAY_CONVERT_MAX_RES);
+    overlayConvertState.previewBlocks = [];
+    overlayConvertState.estimatedCount = 0;
+    if (overlayConvertPanelEl) overlayConvertPanelEl.classList.remove('hidden');
+    updateOverlayConvertMeta();
+    scheduleOverlayConvertPreview();
+}
+
+async function convertOverlayLayerToBlocks(layerId) {
+    const sourceLayer = getLayerById(layerId);
+    if (!sourceLayer || !isOverlayLayer(sourceLayer)) return;
+    if (!objectConfigs[OVERLAY_CONVERT_TARGET_TOOL]) {
+        alert('Color Block tool config is missing, so conversion cannot run.');
+        return;
+    }
+    if (overlayConvertState.isConverting) return;
+
+    const fullBlocks = sampleOverlayToBlockList(sourceLayer, overlayConvertState.resolution, 34000);
+    if (fullBlocks.length === 0) {
+        alert('No visible pixels were found to convert.');
+        return;
+    }
+
+    overlayConvertState.isConverting = true;
+    closeOverlayConvertPanel();
+
+    beginUndoBatch();
+    const startedAt = performance.now();
+    let lastUiUpdate = startedAt;
+
+    const sourceIndex = getLayerIndexById(sourceLayer.id);
+    const targetLayerId = layerState.nextId++;
+    const targetLayer = createDefaultObjectLayer(targetLayerId, `${sourceLayer.name} Blocks`);
+    const insertIndex = sourceIndex >= 0 ? sourceIndex + 1 : layerState.items.length;
+    layerState.items.splice(insertIndex, 0, targetLayer);
+    layerState.activeId = targetLayerId;
+    renderLayersUI();
+
+    const total = fullBlocks.length;
+    showFillProgress('Converting Image', 0, total, 0);
+
+    for (let i = 0; i < total; i++) {
+        const block = fullBlocks[i];
+        const placed = createPlacedObject(OVERLAY_CONVERT_TARGET_TOOL, block.x, block.y, 0, block.scale);
+        placed.color = block.color;
+        objects.push(placed);
+        markUndoDirty();
+
+        if ((i + 1) % OVERLAY_CONVERT_PROGRESS_CHUNK === 0 || i === total - 1) {
+            const now = performance.now();
+            if ((now - lastUiUpdate) >= FILL_UI_UPDATE_INTERVAL_MS || i === total - 1) {
+                showFillProgress('Converting Image', i + 1, total, now - startedAt);
+                draw();
+                await yieldToUi();
+                lastUiUpdate = now;
+            }
+        }
+    }
+
+    hideFillProgress();
+    endUndoBatch();
+    updateObjectLayerDepths();
+    renderLayersUI();
+    draw();
+    overlayConvertState.isConverting = false;
+}
+
+function handleLayerContextAction(action, layerId) {
+    const layer = getLayerById(layerId);
+    if (!layer) return;
+
+    layerState.activeId = layer.id;
+    sanitizeSelectionForActiveLayer();
+    renderLayersUI();
+
+    if (action === 'duplicate') {
+        duplicateActiveLayer();
+        return;
+    }
+    if (action === 'rename') {
+        renameActiveLayer();
+        return;
+    }
+    if (action === 'delete') {
+        deleteActiveLayer();
+        return;
+    }
+    if (action === 'convert' && isOverlayLayer(layer)) {
+        openOverlayConvertPanel(layer.id);
+    }
 }
 
 function getLayerIndexById(id) {
@@ -595,6 +877,12 @@ function renderLayersUI() {
             draw();
         });
 
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showLayerContextMenuForLayer(layer.id, e.clientX, e.clientY);
+        });
+
         row.addEventListener('dragstart', (e) => {
             draggingLayerId = layer.id;
             row.classList.add('dragging');
@@ -756,6 +1044,67 @@ function setupLayersUI() {
     if (layerDeleteBtn) layerDeleteBtn.addEventListener('click', deleteActiveLayer);
     if (layerRenameBtn) layerRenameBtn.addEventListener('click', renameActiveLayer);
     if (layerDuplicateBtn) layerDuplicateBtn.addEventListener('click', duplicateActiveLayer);
+
+    if (layerContextMenuEl) {
+        layerContextMenuEl.addEventListener('click', (e) => {
+            const target = e.target instanceof HTMLElement ? e.target.closest('button[data-action]') : null;
+            if (!target) return;
+            const action = target.dataset.action;
+            if (!action || layerContextMenuLayerId === null) return;
+            const actionLayerId = layerContextMenuLayerId;
+            hideLayerContextMenu();
+            handleLayerContextAction(action, actionLayerId);
+        });
+
+        document.addEventListener('click', (e) => {
+            if (layerContextMenuEl.classList.contains('hidden')) return;
+            if (e.target instanceof Node && layerContextMenuEl.contains(e.target)) return;
+            hideLayerContextMenu();
+        });
+
+        window.addEventListener('resize', hideLayerContextMenu);
+        window.addEventListener('scroll', hideLayerContextMenu, true);
+    }
+
+    if (overlayConvertResolutionEl) {
+        overlayConvertResolutionEl.min = String(OVERLAY_CONVERT_MIN_RES);
+        overlayConvertResolutionEl.max = String(OVERLAY_CONVERT_MAX_RES);
+        overlayConvertResolutionEl.addEventListener('input', () => {
+            overlayConvertState.resolution = clamp(Number(overlayConvertResolutionEl.value), OVERLAY_CONVERT_MIN_RES, OVERLAY_CONVERT_MAX_RES);
+            updateOverlayConvertMeta();
+            scheduleOverlayConvertPreview();
+        });
+    }
+
+    if (overlayConvertCancelBtn) {
+        overlayConvertCancelBtn.addEventListener('click', () => {
+            if (overlayConvertState.isConverting) return;
+            closeOverlayConvertPanel();
+        });
+    }
+
+    if (overlayConvertApplyBtn) {
+        overlayConvertApplyBtn.addEventListener('click', () => {
+            if (!overlayConvertState.isOpen || overlayConvertState.layerId === null) return;
+            convertOverlayLayerToBlocks(overlayConvertState.layerId)
+                .catch((err) => {
+                    console.error('Overlay convert failed:', err);
+                    hideFillProgress();
+                    overlayConvertState.isConverting = false;
+                    endUndoBatch();
+                    alert('Image conversion failed due to an internal error.');
+                });
+        });
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        hideLayerContextMenu();
+        if (overlayConvertState.isOpen && !overlayConvertState.isConverting) {
+            closeOverlayConvertPanel();
+        }
+    });
+
     renderLayersUI();
 }
 
@@ -798,6 +1147,8 @@ function createImageOverlayLayerFromDataUrl(dataUrl) {
                 rotation: 0
             }
         };
+
+        overlayImageDataCache.delete(dataUrl);
 
         const activeIndex = layerState.items.findIndex(item => item.id === layerState.activeId);
         const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
@@ -4058,6 +4409,21 @@ function draw() {
         ctx.translate(camera.x, camera.y);
         ctx.scale(camera.zoom, camera.zoom);
 
+    const viewPad = 140 / Math.max(0.2, camera.zoom);
+    const viewMinX = (-camera.x / camera.zoom) - viewPad;
+    const viewMaxX = ((-camera.x + width) / camera.zoom) + viewPad;
+    const viewMinY = (-camera.y / camera.zoom) - viewPad;
+    const viewMaxY = ((-camera.y + height) / camera.zoom) + viewPad;
+    const selectedSet = new Set(selectedObjects);
+    const useFastColorableRender = objects.length >= FAST_COLORABLE_RENDER_THRESHOLD;
+
+    const isObjectLikelyVisible = (obj, dims, visualScale) => {
+        const halfW = (dims.w * visualScale) / 2;
+        const halfH = (dims.h * visualScale) / 2;
+        const radius = Math.sqrt((halfW * halfW) + (halfH * halfH));
+        return !(obj.x + radius < viewMinX || obj.x - radius > viewMaxX || obj.y + radius < viewMinY || obj.y - radius > viewMaxY);
+    };
+
     // Draw objects and overlays by layer order (bottom to top).
     const sortedObjects = [...objects].sort((a, b) => {
         const za = Number.isFinite(a.z) ? a.z : 0;
@@ -4076,6 +4442,10 @@ function draw() {
         const config = objectConfigs[obj.type];
         if (!config) return;
 
+        const dims = getRenderDimensions(obj.type);
+        const visualScale = getCompensatedScaleMagnitude(obj.type, obj.s || 1);
+        if (!isObjectLikelyVisible(obj, dims, visualScale)) return;
+
         const isDimmed = !isObjectEditableInCurrentLayer(obj);
         ctx.save();
         if (isDimmed) {
@@ -4089,11 +4459,13 @@ function draw() {
         }
 
         const img = objectImages[obj.type];
-        const dims = getRenderDimensions(obj.type);
         const w = dims.w;
         const h = dims.h;
 
-        if (img && img.complete) {
+        if (useFastColorableRender && config.colorable && FAST_COLORABLE_TYPES.has(obj.type)) {
+            ctx.fillStyle = obj.color || '#ffffff';
+            ctx.fillRect(-w / 2, -h / 2, w, h);
+        } else if (img && img.complete) {
             if (config.colorable) {
                 drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
             } else {
@@ -4104,7 +4476,7 @@ function draw() {
             ctx.fillRect(-w / 2, -h / 2, w, h);
         }
 
-        if (selectedObjects.includes(obj)) {
+        if (selectedSet.has(obj)) {
             ctx.strokeStyle = config.highlight || '#00ffcc';
             const zoomComp = Math.max(1, camera.zoom);
             const outlinePad = 1.65 / zoomComp;
@@ -4113,7 +4485,7 @@ function draw() {
         }
         ctx.restore();
 
-        if (objectHasMovementEnabled(obj)) {
+        if (objectHasMovementEnabled(obj) && selectedSet.has(obj)) {
             const moveAngle = Number(obj.mA) || 0;
             const moveSpeed = Math.abs(Number(obj.mS) || 0);
             const arrowLen = 26 + Math.min(42, moveSpeed * 3.5);
@@ -4189,6 +4561,19 @@ function draw() {
             ctx.font = `${12 / camera.zoom}px Arial, sans-serif`;
             ctx.textBaseline = 'bottom';
             ctx.fillText('Overlay: drag to move, Alt+wheel to scale, Ctrl+wheel to rotate', (overlay.x || 0) - drawW / 2, (overlay.y || 0) - drawH / 2 - (8 / camera.zoom));
+            ctx.restore();
+        }
+
+        if (overlayConvertState.isOpen && overlayConvertState.layerId === layer.id && overlayConvertState.previewBlocks.length > 0) {
+            ctx.save();
+            const dims = getToolDimensions(OVERLAY_CONVERT_TARGET_TOOL);
+            ctx.globalAlpha = 0.62;
+            for (const block of overlayConvertState.previewBlocks) {
+                const w = dims.w * block.scale;
+                const h = dims.h * block.scale;
+                ctx.fillStyle = block.color;
+                ctx.fillRect(block.x - (w / 2), block.y - (h / 2), w, h);
+            }
             ctx.restore();
         }
     };

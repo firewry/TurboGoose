@@ -148,6 +148,30 @@
         </div>
     </div>
 
+    <div id="layer-context-menu" class="layer-context-menu hidden" role="menu" aria-label="Layer options">
+        <button type="button" data-action="duplicate">Duplicate</button>
+        <button type="button" data-action="rename">Rename</button>
+        <button type="button" data-action="delete">Delete</button>
+        <button type="button" data-action="convert" class="convert-only">Convert To Blocks</button>
+    </div>
+
+    <div id="overlay-convert-panel" class="overlay-convert-panel hidden" aria-live="polite">
+        <div class="overlay-convert-title">Convert Reference Image To Blocks</div>
+        <div class="overlay-convert-row">
+            <label for="overlay-convert-resolution">Resolution</label>
+            <input type="range" id="overlay-convert-resolution" min="12" max="140" step="1" value="52">
+            <span id="overlay-convert-resolution-value">52</span>
+        </div>
+        <div class="overlay-convert-row meta-row">
+            <span id="overlay-convert-count">Estimated blocks: 0</span>
+            <span id="overlay-convert-status"></span>
+        </div>
+        <div class="overlay-convert-actions">
+            <button id="overlay-convert-cancel" type="button">Cancel</button>
+            <button id="overlay-convert-apply" type="button">Convert</button>
+        </div>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>

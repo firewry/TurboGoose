@@ -194,6 +194,127 @@ body, html {
     background: #505050;
 }
 
+.layer-context-menu {
+    position: fixed;
+    z-index: 100100;
+    min-width: 180px;
+    background: rgba(18, 24, 30, 0.97);
+    border: 1px solid rgba(130, 221, 255, 0.38);
+    border-radius: 8px;
+    box-shadow: 0 12px 26px rgba(0, 0, 0, 0.44);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.layer-context-menu button {
+    border: none;
+    background: transparent;
+    color: #d9e9f4;
+    border-radius: 6px;
+    padding: 8px 10px;
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.layer-context-menu button:hover {
+    background: rgba(116, 206, 255, 0.2);
+}
+
+.layer-context-menu button.convert-only {
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+    margin-top: 4px;
+    padding-top: 9px;
+}
+
+.overlay-convert-panel {
+    position: fixed;
+    left: 50%;
+    top: 14px;
+    transform: translateX(-50%);
+    z-index: 100090;
+    min-width: 420px;
+    max-width: min(86vw, 620px);
+    background: rgba(14, 20, 26, 0.96);
+    border: 1px solid rgba(115, 210, 255, 0.48);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.42);
+    padding: 12px 14px;
+    color: #dbe9f4;
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+}
+
+.overlay-convert-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #8ccce8;
+    margin-bottom: 10px;
+    font-weight: 700;
+}
+
+.overlay-convert-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 9px;
+}
+
+.overlay-convert-row label {
+    min-width: 76px;
+    font-size: 12px;
+    color: #bfd5e3;
+}
+
+#overlay-convert-resolution {
+    flex: 1;
+}
+
+#overlay-convert-resolution-value {
+    min-width: 44px;
+    text-align: right;
+    font-size: 12px;
+    color: #ecf8ff;
+    font-weight: 700;
+}
+
+.overlay-convert-row.meta-row {
+    justify-content: space-between;
+    color: #9ec7de;
+    font-size: 12px;
+}
+
+.overlay-convert-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.overlay-convert-actions button {
+    border: 1px solid #4f6778;
+    background: #22303b;
+    color: #def0fb;
+    border-radius: 6px;
+    padding: 7px 12px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.overlay-convert-actions button:hover {
+    background: #2f4250;
+}
+
+#overlay-convert-apply {
+    border-color: #2f8cb8;
+    background: #145577;
+}
+
+#overlay-convert-apply:hover {
+    background: #1b6791;
+}
+
 canvas {
     display: block;
     image-rendering: pixelated;
@@ -348,7 +469,7 @@ canvas {
     z-index: 1000;
 }
 
-#export-modal.hidden, #settings-modal.hidden, #image-overlay-modal.hidden {
+#export-modal.hidden, #settings-modal.hidden, #image-overlay-modal.hidden, #layer-context-menu.hidden, #overlay-convert-panel.hidden {
     display: none;
 }
 
