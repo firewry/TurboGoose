@@ -1955,71 +1955,6 @@ function pointInPolygon(point, polygon) {
     return inside;
 }
 
-function orientation(a, b, c) {
-    const value = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
-    if (Math.abs(value) < 1e-9) return 0;
-    return value > 0 ? 1 : 2;
-}
-
-function onSegment(a, b, c) {
-    return b.x <= Math.max(a.x, c.x) + 1e-9
-        && b.x + 1e-9 >= Math.min(a.x, c.x)
-        && b.y <= Math.max(a.y, c.y) + 1e-9
-        && b.y + 1e-9 >= Math.min(a.y, c.y);
-}
-
-function segmentsIntersect(p1, q1, p2, q2) {
-    const o1 = orientation(p1, q1, p2);
-    const o2 = orientation(p1, q1, q2);
-    const o3 = orientation(p2, q2, p1);
-    const o4 = orientation(p2, q2, q1);
-
-    if (o1 !== o2 && o3 !== o4) return true;
-    if (o1 === 0 && onSegment(p1, p2, q1)) return true;
-    if (o2 === 0 && onSegment(p1, q2, q1)) return true;
-    if (o3 === 0 && onSegment(p2, p1, q2)) return true;
-    if (o4 === 0 && onSegment(p2, q1, q2)) return true;
-    return false;
-}
-
-function polygonRectOverlap(polygon, rect) {
-    if (!polygon || polygon.length < 3) return false;
-
-    const rectCorners = [
-        { x: rect.minX, y: rect.minY },
-        { x: rect.maxX, y: rect.minY },
-        { x: rect.maxX, y: rect.maxY },
-        { x: rect.minX, y: rect.maxY }
-    ];
-
-    for (const point of polygon) {
-        if (point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY) {
-            return true;
-        }
-    }
-
-    for (const corner of rectCorners) {
-        if (pointInPolygon(corner, polygon)) return true;
-    }
-
-    const rectEdges = [
-        [rectCorners[0], rectCorners[1]],
-        [rectCorners[1], rectCorners[2]],
-        [rectCorners[2], rectCorners[3]],
-        [rectCorners[3], rectCorners[0]]
-    ];
-
-    for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i];
-        const b = polygon[(i + 1) % polygon.length];
-        for (const [r1, r2] of rectEdges) {
-            if (segmentsIntersect(a, b, r1, r2)) return true;
-        }
-    }
-
-    return false;
-}
-
 function canPreviewLassoFillAt(x, y) {
     if (!lassoPolygon || lassoPolygon.length < 3) return false;
     if (currentTool === 'none' || currentTool === 'lasso' || currentTool === 'text' || currentTool === 'brush' || currentTool === 'grid') return false;
@@ -2038,218 +1973,8 @@ function getPolygonBounds(polygon) {
     };
 }
 
-function rectFromMinSize(minX, minY, size) {
-    return {
-        minX,
-        minY,
-        maxX: minX + size,
-        maxY: minY + size,
-        size,
-        cx: minX + size / 2,
-        cy: minY + size / 2
-    };
-}
-
-function isRectFullyInsidePolygon(rect, polygon) {
-    const corners = [
-        { x: rect.minX, y: rect.minY },
-        { x: rect.maxX, y: rect.minY },
-        { x: rect.maxX, y: rect.maxY },
-        { x: rect.minX, y: rect.maxY }
-    ];
-    return corners.every(corner => pointInPolygon(corner, polygon));
-}
-
-function classifyRectAgainstPolygon(rect, polygon) {
-    if (!polygonRectOverlap(polygon, rect)) return 'outside';
-    if (isRectFullyInsidePolygon(rect, polygon)) return 'inside';
-    return 'intersect';
-}
-
-function collectAdaptiveSquaresForPolygon(polygon, baseSize, maxDepth) {
-    const bounds = getPolygonBounds(polygon);
-    const startX = Math.floor(bounds.minX / baseSize) * baseSize;
-    const startY = Math.floor(bounds.minY / baseSize) * baseSize;
-    const endX = Math.ceil(bounds.maxX / baseSize) * baseSize;
-    const endY = Math.ceil(bounds.maxY / baseSize) * baseSize;
-
-    const squares = [];
-    const maxSquares = 20000;
-
-    const visitRect = (rect, depth) => {
-        if (squares.length >= maxSquares) return;
-        const cls = classifyRectAgainstPolygon(rect, polygon);
-        if (cls === 'outside') return;
-
-        if (cls === 'inside' || depth >= maxDepth) {
-            squares.push({ ...rect, cls });
-            return;
-        }
-
-        const half = rect.size / 2;
-        if (half < 2) {
-            squares.push({ ...rect, cls });
-            return;
-        }
-
-        visitRect(rectFromMinSize(rect.minX, rect.minY, half), depth + 1);
-        visitRect(rectFromMinSize(rect.minX + half, rect.minY, half), depth + 1);
-        visitRect(rectFromMinSize(rect.minX, rect.minY + half, half), depth + 1);
-        visitRect(rectFromMinSize(rect.minX + half, rect.minY + half, half), depth + 1);
-    };
-
-    for (let y = startY; y < endY; y += baseSize) {
-        for (let x = startX; x < endX; x += baseSize) {
-            visitRect(rectFromMinSize(x, y, baseSize), 0);
-            if (squares.length >= maxSquares) break;
-        }
-        if (squares.length >= maxSquares) break;
-    }
-
-    return squares;
-}
-
-function getNearestBoundarySample(point, polygon) {
-    let best = {
-        dist: Number.POSITIVE_INFINITY,
-        angleDeg: 0,
-        nearestX: point.x,
-        nearestY: point.y,
-        inwardX: 0,
-        inwardY: 0
-    };
-
-    for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i];
-        const b = polygon[(i + 1) % polygon.length];
-        const abX = b.x - a.x;
-        const abY = b.y - a.y;
-        const abLenSq = abX * abX + abY * abY;
-        if (abLenSq < 1e-9) continue;
-
-        const apX = point.x - a.x;
-        const apY = point.y - a.y;
-        const t = Math.max(0, Math.min(1, (apX * abX + apY * abY) / abLenSq));
-        const nearX = a.x + abX * t;
-        const nearY = a.y + abY * t;
-
-        const dx = point.x - nearX;
-        const dy = point.y - nearY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist >= best.dist) continue;
-
-        const segLen = Math.sqrt(abLenSq);
-        const nx = -abY / segLen;
-        const ny = abX / segLen;
-        const testA = { x: nearX + nx * 4, y: nearY + ny * 4 };
-        const testB = { x: nearX - nx * 4, y: nearY - ny * 4 };
-
-        let inwardX = nx;
-        let inwardY = ny;
-        const insideA = pointInPolygon(testA, polygon);
-        const insideB = pointInPolygon(testB, polygon);
-        if (insideB && !insideA) {
-            inwardX = -nx;
-            inwardY = -ny;
-        }
-
-        best = {
-            dist,
-            angleDeg: Math.atan2(abY, abX) * 180 / Math.PI,
-            nearestX: nearX,
-            nearestY: nearY,
-            inwardX,
-            inwardY
-        };
-    }
-
-    return best;
-}
-
-function normalizeAngleDeg(angle) {
-    let value = angle;
-    while (value > 180) value -= 360;
-    while (value < -180) value += 360;
-    return value;
-}
-
-function snapAngleDeg(angle, step = 3) {
-    return Math.round(angle / step) * step;
-}
-
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-}
-
-function rotatePointAround(point, center, angleDeg) {
-    const rad = angleDeg * Math.PI / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const dx = point.x - center.x;
-    const dy = point.y - center.y;
-    return {
-        x: center.x + dx * cos - dy * sin,
-        y: center.y + dx * sin + dy * cos
-    };
-}
-
-function getScanlineIntersections(polygon, y) {
-    const intersections = [];
-    for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i];
-        const b = polygon[(i + 1) % polygon.length];
-        const yMin = Math.min(a.y, b.y);
-        const yMax = Math.max(a.y, b.y);
-        if (y < yMin || y >= yMax || Math.abs(a.y - b.y) < 1e-9) continue;
-
-        const t = (y - a.y) / (b.y - a.y);
-        intersections.push(a.x + t * (b.x - a.x));
-    }
-    intersections.sort((left, right) => left - right);
-    return intersections;
-}
-
-function isPointOnPolygonEdge(point, polygon) {
-    for (let i = 0; i < polygon.length; i++) {
-        const a = polygon[i];
-        const b = polygon[(i + 1) % polygon.length];
-        if (orientation(a, point, b) === 0 && onSegment(a, point, b)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function pointInPolygonInclusive(point, polygon) {
-    return pointInPolygon(point, polygon) || isPointOnPolygonEdge(point, polygon);
-}
-
-function getRotatedRectPoints(cx, cy, w, h, rotationDeg) {
-    const hw = w / 2;
-    const hh = h / 2;
-    const rad = rotationDeg * Math.PI / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-
-    const rotatePoint = (lx, ly) => ({
-        x: cx + lx * cos - ly * sin,
-        y: cy + lx * sin + ly * cos
-    });
-
-    const c1 = rotatePoint(-hw, -hh);
-    const c2 = rotatePoint(hw, -hh);
-    const c3 = rotatePoint(hw, hh);
-    const c4 = rotatePoint(-hw, hh);
-
-    const m1 = rotatePoint(0, -hh);
-    const m2 = rotatePoint(hw, 0);
-    const m3 = rotatePoint(0, hh);
-    const m4 = rotatePoint(-hw, 0);
-
-    return {
-        corners: [c1, c2, c3, c4],
-        samples: [c1, c2, c3, c4, m1, m2, m3, m4, { x: cx, y: cy }]
-    };
 }
 
 function pointInRotatedRect(point, cx, cy, w, h, rotationDeg) {
@@ -2263,9 +1988,330 @@ function pointInRotatedRect(point, cx, cy, w, h, rotationDeg) {
     return Math.abs(lx) <= w / 2 && Math.abs(ly) <= h / 2;
 }
 
-function isRotatedRectInsidePolygon(cx, cy, w, h, rotationDeg, polygon) {
-    const rect = getRotatedRectPoints(cx, cy, w, h, rotationDeg);
-    return rect.samples.every(sample => pointInPolygonInclusive(sample, polygon));
+function buildPolygonMask(polygon, preferredScale) {
+    if (!polygon || polygon.length < 3) return null;
+
+    const bounds = getPolygonBounds(polygon);
+    const spanW = Math.max(1e-3, bounds.maxX - bounds.minX);
+    const spanH = Math.max(1e-3, bounds.maxY - bounds.minY);
+    let scale = Math.max(0.02, Number(preferredScale) || 1);
+
+    const MAX_DIM = 2800;
+    const MAX_PIXELS = 6_000_000;
+
+    // Directly clamp initial scale from selection span so we avoid huge
+    // offscreen canvases even for massive selections.
+    const dimLimitedScale = MAX_DIM / Math.max(spanW, spanH);
+    const pixelLimitedScale = Math.sqrt(MAX_PIXELS / (spanW * spanH));
+    if (Number.isFinite(dimLimitedScale)) scale = Math.min(scale, dimLimitedScale);
+    if (Number.isFinite(pixelLimitedScale)) scale = Math.min(scale, pixelLimitedScale);
+    scale = Math.max(0.02, scale);
+
+    let minX = bounds.minX;
+    let minY = bounds.minY;
+    let maxX = bounds.maxX;
+    let maxY = bounds.maxY;
+    let width = 1;
+    let height = 1;
+
+    for (let i = 0; i < 60; i++) {
+        const paddingWorld = 3 / scale;
+        minX = bounds.minX - paddingWorld;
+        minY = bounds.minY - paddingWorld;
+        maxX = bounds.maxX + paddingWorld;
+        maxY = bounds.maxY + paddingWorld;
+
+        width = Math.max(1, Math.ceil((maxX - minX) * scale));
+        height = Math.max(1, Math.ceil((maxY - minY) * scale));
+
+        if (width <= MAX_DIM && height <= MAX_DIM && (width * height) <= MAX_PIXELS) {
+            break;
+        }
+        scale = Math.max(0.01, scale * 0.82);
+    }
+
+    if (width > MAX_DIM || height > MAX_DIM || (width * height) > MAX_PIXELS) {
+        return null;
+    }
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = width;
+    offCanvas.height = height;
+    const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+    offCtx.clearRect(0, 0, width, height);
+    offCtx.fillStyle = '#ffffff';
+    offCtx.beginPath();
+    offCtx.moveTo((polygon[0].x - minX) * scale, (polygon[0].y - minY) * scale);
+    for (let i = 1; i < polygon.length; i++) {
+        offCtx.lineTo((polygon[i].x - minX) * scale, (polygon[i].y - minY) * scale);
+    }
+    offCtx.closePath();
+    offCtx.fill('evenodd');
+
+    const imageData = offCtx.getImageData(0, 0, width, height);
+    const alphaData = imageData.data;
+    const inside = new Uint8Array(width * height);
+    let insideCount = 0;
+
+    for (let i = 0; i < inside.length; i++) {
+        const isInside = alphaData[i * 4 + 3] >= 64;
+        inside[i] = isInside ? 1 : 0;
+        if (isInside) insideCount++;
+    }
+
+    if (insideCount === 0) return null;
+
+    return {
+        minX,
+        minY,
+        maxX,
+        maxY,
+        width,
+        height,
+        scale,
+        inside,
+        insideCount
+    };
+}
+
+function buildRotatedRectFootprint(mask, worldW, worldH, rotationDeg) {
+    const halfW = (worldW * mask.scale) / 2;
+    const halfH = (worldH * mask.scale) / 2;
+    if (halfW < 0.2 || halfH < 0.2) return null;
+
+    const rad = rotationDeg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const radiusX = Math.max(1, Math.ceil(Math.abs(halfW * cos) + Math.abs(halfH * sin)) + 1);
+    const radiusY = Math.max(1, Math.ceil(Math.abs(halfW * sin) + Math.abs(halfH * cos)) + 1);
+
+    if ((radiusX * 2 + 1) * (radiusY * 2 + 1) > 1_500_000) return null;
+
+    const insetPx = 0.35;
+    const maxLocalX = Math.max(0.25, halfW - insetPx);
+    const maxLocalY = Math.max(0.25, halfH - insetPx);
+
+    const deltas = [];
+    let minDx = Infinity;
+    let maxDx = -Infinity;
+    let minDy = Infinity;
+    let maxDy = -Infinity;
+
+    for (let dy = -radiusY; dy <= radiusY; dy++) {
+        for (let dx = -radiusX; dx <= radiusX; dx++) {
+            const localX = dx * cos + dy * sin;
+            const localY = -dx * sin + dy * cos;
+            if (Math.abs(localX) > maxLocalX || Math.abs(localY) > maxLocalY) continue;
+
+            deltas.push(dy * mask.width + dx);
+            if (dx < minDx) minDx = dx;
+            if (dx > maxDx) maxDx = dx;
+            if (dy < minDy) minDy = dy;
+            if (dy > maxDy) maxDy = dy;
+        }
+    }
+
+    if (deltas.length === 0) return null;
+
+    return {
+        deltas: Int32Array.from(deltas),
+        minDx,
+        maxDx,
+        minDy,
+        maxDy,
+        area: deltas.length
+    };
+}
+
+function forEachRotatedLatticeCenter(mask, rotationDeg, stepXWorld, stepYWorld, phaseU, phaseV, callback) {
+    const rad = rotationDeg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    const corners = [
+        { x: mask.minX, y: mask.minY },
+        { x: mask.maxX, y: mask.minY },
+        { x: mask.maxX, y: mask.maxY },
+        { x: mask.minX, y: mask.maxY }
+    ];
+
+    let minU = Infinity;
+    let maxU = -Infinity;
+    let minV = Infinity;
+    let maxV = -Infinity;
+
+    for (const corner of corners) {
+        const u = corner.x * cos + corner.y * sin;
+        const v = -corner.x * sin + corner.y * cos;
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+    }
+
+    const centerX = (mask.minX + mask.maxX) * 0.5;
+    const centerY = (mask.minY + mask.maxY) * 0.5;
+    const originU = centerX * cos + centerY * sin;
+    const originV = -centerX * sin + centerY * cos;
+
+    const uMinIndex = Math.floor((minU - originU) / stepXWorld) - 2;
+    const uMaxIndex = Math.ceil((maxU - originU) / stepXWorld) + 2;
+    const vMinIndex = Math.floor((minV - originV) / stepYWorld) - 2;
+    const vMaxIndex = Math.ceil((maxV - originV) / stepYWorld) + 2;
+
+    for (let vi = vMinIndex; vi <= vMaxIndex; vi++) {
+        const v = originV + (vi + phaseV) * stepYWorld;
+        for (let ui = uMinIndex; ui <= uMaxIndex; ui++) {
+            const u = originU + (ui + phaseU) * stepXWorld;
+            const worldX = u * cos - v * sin;
+            const worldY = u * sin + v * cos;
+            const maskX = Math.round((worldX - mask.minX) * mask.scale);
+            const maskY = Math.round((worldY - mask.minY) * mask.scale);
+
+            if (maskX < 0 || maskY < 0 || maskX >= mask.width || maskY >= mask.height) continue;
+
+            const keepGoing = callback(maskX, maskY);
+            if (keepGoing === false) return;
+        }
+    }
+}
+
+function evaluatePlacementGain(mask, coveredMask, centerIndex, centerX, centerY, footprint) {
+    if (
+        centerX + footprint.minDx < 0 ||
+        centerX + footprint.maxDx >= mask.width ||
+        centerY + footprint.minDy < 0 ||
+        centerY + footprint.maxDy >= mask.height
+    ) {
+        return -1;
+    }
+
+    let gain = 0;
+    for (let i = 0; i < footprint.deltas.length; i++) {
+        const index = centerIndex + footprint.deltas[i];
+        if (!mask.inside[index]) return -1;
+        if (!coveredMask[index]) gain++;
+    }
+    return gain;
+}
+
+function applyPlacementCoverage(mask, coveredMask, centerIndex, footprint) {
+    let gained = 0;
+    for (let i = 0; i < footprint.deltas.length; i++) {
+        const index = centerIndex + footprint.deltas[i];
+        if (mask.inside[index] && !coveredMask[index]) {
+            coveredMask[index] = 1;
+            gained++;
+        }
+    }
+    return gained;
+}
+
+function buildScaleFractions(minFraction) {
+    const floor = clamp(minFraction, 0.05, 1);
+    const scales = [1];
+    let current = 1;
+
+    while (current > floor) {
+        current *= 0.84;
+        if (current < floor) current = floor;
+        scales.push(Number(current.toFixed(4)));
+        if (current === floor) break;
+    }
+
+    return Array.from(new Set(scales));
+}
+
+function normalizeDegrees360(angleDeg) {
+    let angle = Number(angleDeg) || 0;
+    angle %= 360;
+    if (angle < 0) angle += 360;
+    return angle;
+}
+
+function quantizeAngle(angleDeg, stepDeg = 10) {
+    return normalizeDegrees360(Math.round((Number(angleDeg) || 0) / stepDeg) * stepDeg);
+}
+
+function estimateUncoveredOrientation(mask, coveredMask, cx, cy, radiusPx, fallbackDeg) {
+    const r = Math.max(2, Math.floor(radiusPx));
+    const minX = Math.max(0, cx - r);
+    const maxX = Math.min(mask.width - 1, cx + r);
+    const minY = Math.max(0, cy - r);
+    const maxY = Math.min(mask.height - 1, cy + r);
+
+    let count = 0;
+    let sumX = 0;
+    let sumY = 0;
+
+    for (let y = minY; y <= maxY; y++) {
+        const row = y * mask.width;
+        for (let x = minX; x <= maxX; x++) {
+            const dx = x - cx;
+            const dy = y - cy;
+            if ((dx * dx + dy * dy) > (r * r)) continue;
+
+            const idx = row + x;
+            if (!mask.inside[idx] || coveredMask[idx]) continue;
+            count++;
+            sumX += x;
+            sumY += y;
+        }
+    }
+
+    if (count < 8) return normalizeDegrees360(fallbackDeg);
+
+    const meanX = sumX / count;
+    const meanY = sumY / count;
+
+    let cxx = 0;
+    let cxy = 0;
+    let cyy = 0;
+
+    for (let y = minY; y <= maxY; y++) {
+        const row = y * mask.width;
+        for (let x = minX; x <= maxX; x++) {
+            const dx0 = x - cx;
+            const dy0 = y - cy;
+            if ((dx0 * dx0 + dy0 * dy0) > (r * r)) continue;
+
+            const idx = row + x;
+            if (!mask.inside[idx] || coveredMask[idx]) continue;
+
+            const dx = x - meanX;
+            const dy = y - meanY;
+            cxx += dx * dx;
+            cxy += dx * dy;
+            cyy += dy * dy;
+        }
+    }
+
+    const anisotropy = Math.abs(cxx - cyy) + Math.abs(cxy) * 2;
+    if (anisotropy < 1e-6) return normalizeDegrees360(fallbackDeg);
+
+    const angleRad = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    return normalizeDegrees360(angleRad * 180 / Math.PI);
+}
+
+function buildAdaptiveRotationCandidates(preferredDeg, baseDeg, visualW, visualH) {
+    const aspect = Math.max(0.01, Math.max(visualW, visualH) / Math.max(0.01, Math.min(visualW, visualH)));
+    const seed = aspect > 1.3
+        ? [preferredDeg, preferredDeg + 180, preferredDeg + 22.5, preferredDeg - 22.5, preferredDeg + 90, preferredDeg - 90, baseDeg]
+        : [preferredDeg, preferredDeg + 180, preferredDeg + 90, preferredDeg - 90, baseDeg];
+
+    const out = [];
+    const seen = new Set();
+    for (const angle of seed) {
+        const q = quantizeAngle(angle, 10);
+        const key = q.toFixed(3);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(q);
+    }
+
+    return out;
 }
 
 function fillLassoWithCurrentTool() {
@@ -2274,295 +2320,190 @@ function fillLassoWithCurrentTool() {
     if (isActiveLayerObjectLocked()) return;
 
     const dims = getToolDimensions(currentTool);
-    const baseRawScale = Math.abs(previewScale || 1);
+    const baseRawScale = Math.max(0.005, Math.abs(previewScale || 1));
     const baseVisualScale = getCompensatedScaleMagnitude(currentTool, previewScale || 1);
-    const tileW = Math.max(1, dims.w * baseVisualScale);
-    const tileH = Math.max(1, dims.h * baseVisualScale);
-    const rotDeg = previewRotation || 0;
-    const rotRad = rotDeg * Math.PI / 180;
-    const cosR = Math.cos(rotRad);
-    const sinR = Math.sin(rotRad);
+    const baseW = Math.max(1, dims.w * baseVisualScale);
+    const baseH = Math.max(1, dims.h * baseVisualScale);
+    const baseRotationDeg = Number(previewRotation || 0);
 
-    const bounds = getPolygonBounds(lassoPolygon);
-    const maxObjects = 45000;
-    const placedTiles = []; // track {x, y, w, h, rot} for coverage checks
+    // Mask resolution tracks object size so we preserve shape fidelity while
+    // keeping fill solve time bounded for large selections.
+    const maskScale = clamp(12 / Math.max(6, Math.min(baseW, baseH)), 0.8, 4.5);
+    const mask = buildPolygonMask(lassoPolygon, maskScale);
+    if (!mask || mask.insideCount === 0) return;
 
-    // Inset polygon slightly (by 0.5px) to ensure tiles don't touch the boundary
-    // This provides a safety margin against floating-point edge cases
-    const insetPolygon = insetPolygonByAmount(lassoPolygon, 0.5);
-    const checkPolygon = (insetPolygon && insetPolygon.length >= 3) ? insetPolygon : lassoPolygon;
+    const coveredMask = new Uint8Array(mask.width * mask.height);
+    const placements = [];
+    let uncoveredCount = mask.insideCount;
 
-    function placeTile(cx, cy, rawScale, rot) {
-        if (objects.length >= maxObjects) return false;
-        const s = Number(rawScale.toFixed(3));
-        const visualScale = getCompensatedScaleMagnitude(currentTool, s);
-        const w = dims.w * visualScale;
-        const h = dims.h * visualScale;
-        // Verify ALL sample points of the rotated rect are inside the polygon
-        if (!isRotatedRectInsidePolygon(cx, cy, w, h, rot, checkPolygon)) return false;
+    const baseAreaPx = Math.max(1, Math.round(baseW * mask.scale) * Math.round(baseH * mask.scale));
+    const lowerBound = Math.max(1, Math.ceil(mask.insideCount / baseAreaPx));
+    const maxObjects = Math.min(24000, Math.max(900, lowerBound * 14 + 450));
 
-        objects.push(createPlacedObject(currentTool, cx, cy, Number(rot.toFixed(2)), s));
-        placedTiles.push({ x: cx, y: cy, w, h, rot });
-        markUndoDirty();
-        return true;
-    }
+    const minScaleFraction = Math.max(0.08, Math.min(0.35, 3 / Math.max(baseW, baseH)));
+    const scaleFractions = buildScaleFractions(minScaleFraction);
 
-    function isPointCoveredByPlacedTile(px, py) {
-        for (let i = placedTiles.length - 1; i >= 0; i--) {
-            const t = placedTiles[i];
-            if (pointInRotatedRect({ x: px, y: py }, t.x, t.y, t.w, t.h, t.rot)) {
-                return true;
-            }
-        }
-        return false;
-    }
+    for (const fraction of scaleFractions) {
+        if (placements.length >= maxObjects || uncoveredCount <= 0) break;
 
-    // === PHASE 1: Interior grid fill ===
-    // Transform the bounding box into the rotated coordinate frame, lay a grid, transform back
-    const pad = Math.max(tileW, tileH) * 2;
-    const expandedMinX = bounds.minX - pad;
-    const expandedMinY = bounds.minY - pad;
-    const expandedMaxX = bounds.maxX + pad;
-    const expandedMaxY = bounds.maxY + pad;
+        const rawScale = baseRawScale * fraction;
+        const visualScale = getCompensatedScaleMagnitude(currentTool, rawScale);
+        const tileW = Math.max(1 / mask.scale, dims.w * visualScale);
+        const tileH = Math.max(1 / mask.scale, dims.h * visualScale);
+        const footprintCache = new Map();
+        const getFootprintForAngle = (angle) => {
+            const key = quantizeAngle(angle, 10).toFixed(3);
+            if (footprintCache.has(key)) return footprintCache.get(key);
+            const fp = buildRotatedRectFootprint(mask, tileW, tileH, Number(key));
+            const record = fp ? { angle: Number(key), footprint: fp } : null;
+            footprintCache.set(key, record);
+            return record;
+        };
 
-    // Corners of expanded bounding box
-    const bboxCorners = [
-        { x: expandedMinX, y: expandedMinY },
-        { x: expandedMaxX, y: expandedMinY },
-        { x: expandedMaxX, y: expandedMaxY },
-        { x: expandedMinX, y: expandedMaxY }
-    ];
+        const stepFactor = fraction >= 0.7
+            ? 0.95
+            : fraction >= 0.45
+                ? 0.86
+                : fraction >= 0.28
+                    ? 0.74
+                    : 0.62;
 
-    // Rotate corners into tile-local frame
-    const rotatedCorners = bboxCorners.map(c => ({
-        u: c.x * cosR + c.y * sinR,
-        v: -c.x * sinR + c.y * cosR
-    }));
+        const stepX = Math.max(1 / mask.scale, tileW * stepFactor);
+        const stepY = Math.max(1 / mask.scale, tileH * stepFactor);
 
-    const minU = Math.min(...rotatedCorners.map(c => c.u));
-    const maxU = Math.max(...rotatedCorners.map(c => c.u));
-    const minV = Math.min(...rotatedCorners.map(c => c.v));
-    const maxV = Math.max(...rotatedCorners.map(c => c.v));
+        const phasePairs = fraction >= 0.55
+            ? [[0, 0], [0.5, 0.5]]
+            : fraction >= 0.3
+                ? [[0, 0], [0.5, 0], [0, 0.5], [0.5, 0.5]]
+                : [[0, 0], [0.5, 0], [0, 0.5], [0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
 
-    // Snap grid start to tile-size multiples
-    const gridStartU = Math.floor(minU / tileW) * tileW + tileW / 2;
-    const gridStartV = Math.floor(minV / tileH) * tileH + tileH / 2;
+        const warmupAngles = buildAdaptiveRotationCandidates(baseRotationDeg, baseRotationDeg, tileW, tileH);
+        const warmupCandidates = warmupAngles.map(a => getFootprintForAngle(a)).filter(Boolean);
+        if (warmupCandidates.length === 0) continue;
+        const maxFootprintArea = Math.max(...warmupCandidates.map(c => c.footprint.area));
+        const minGain = Math.max(1, Math.floor(maxFootprintArea * (fraction >= 0.55 ? 0.28 : fraction >= 0.3 ? 0.12 : 0.03)));
+        const seenCenters = new Set();
 
-    for (let v = gridStartV; v <= maxV; v += tileH) {
-        for (let u = gridStartU; u <= maxU; u += tileW) {
-            // Transform back to world coordinates
-            const wx = u * cosR - v * sinR;
-            const wy = u * sinR + v * cosR;
+        for (const [phaseU, phaseV] of phasePairs) {
+            if (placements.length >= maxObjects || uncoveredCount <= 0) break;
 
-            // Quick reject: is center even inside polygon?
-            if (!pointInPolygon({ x: wx, y: wy }, lassoPolygon)) continue;
+            forEachRotatedLatticeCenter(mask, baseRotationDeg, stepX, stepY, phaseU, phaseV, (maskX, maskY) => {
+                if (placements.length >= maxObjects || uncoveredCount <= 0) return false;
 
-            placeTile(wx, wy, baseRawScale, rotDeg);
-        }
-    }
+                const centerIndex = maskY * mask.width + maskX;
+                if (seenCenters.has(centerIndex)) return true;
+                seenCenters.add(centerIndex);
 
-    // === PHASE 2: Boundary coverage with shrinking tiles ===
-    // Scan a fine grid and for any uncovered interior point, try to place a tile
-    const minTileDim = Math.min(tileW, tileH);
-    const scanSpacing = Math.max(1.5, minTileDim * 0.15);
-    const scaleSteps = [];
-    for (let s = 1.0; s >= 0.08; s -= 0.04) {
-        scaleSteps.push(s);
-    }
-    // Much smaller steps for fine details (0.03 down to 0.008)
-    scaleSteps.push(0.06, 0.04, 0.03, 0.025, 0.02, 0.015, 0.01, 0.008);
+                if (!mask.inside[centerIndex]) return true;
 
-    // Build spatial index for faster coverage checks
-    const cellSize = Math.max(tileW, tileH) * 1.5;
-    const spatialGrid = new Map();
+                const localPreferred = estimateUncoveredOrientation(mask, coveredMask, maskX, maskY, Math.max(6, Math.min(tileW, tileH) * mask.scale * 0.9), baseRotationDeg);
+                const angles = buildAdaptiveRotationCandidates(localPreferred, baseRotationDeg, tileW, tileH);
 
-    function getSpatialKey(x, y) {
-        return `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
-    }
+                let bestCandidate = null;
+                let bestGain = -1;
 
-    function addToSpatialGrid(tile) {
-        // Add tile to all cells it could overlap
-        const r = Math.max(tile.w, tile.h) * 0.71; // half-diagonal
-        const minCX = Math.floor((tile.x - r) / cellSize);
-        const maxCX = Math.floor((tile.x + r) / cellSize);
-        const minCY = Math.floor((tile.y - r) / cellSize);
-        const maxCY = Math.floor((tile.y + r) / cellSize);
-        for (let cy = minCY; cy <= maxCY; cy++) {
-            for (let cx = minCX; cx <= maxCX; cx++) {
-                const key = `${cx},${cy}`;
-                let bucket = spatialGrid.get(key);
-                if (!bucket) {
-                    bucket = [];
-                    spatialGrid.set(key, bucket);
-                }
-                bucket.push(tile);
-            }
-        }
-    }
-
-    function isPointCoveredSpatial(px, py) {
-        const key = getSpatialKey(px, py);
-        const bucket = spatialGrid.get(key);
-        if (!bucket) return false;
-        for (let i = bucket.length - 1; i >= 0; i--) {
-            const t = bucket[i];
-            if (pointInRotatedRect({ x: px, y: py }, t.x, t.y, t.w, t.h, t.rot)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Index all Phase 1 tiles
-    for (const tile of placedTiles) {
-        addToSpatialGrid(tile);
-    }
-
-    // Collect uncovered interior points
-    const uncoveredPoints = [];
-    for (let sy = bounds.minY; sy <= bounds.maxY; sy += scanSpacing) {
-        // Use scanline intersections for fast inside detection
-        const intersections = getScanlineIntersections(lassoPolygon, sy);
-        for (let si = 0; si + 1 < intersections.length; si += 2) {
-            const xStart = intersections[si];
-            const xEnd = intersections[si + 1];
-            for (let sx = Math.ceil(xStart / scanSpacing) * scanSpacing; sx <= xEnd; sx += scanSpacing) {
-                if (!isPointCoveredSpatial(sx, sy)) {
-                    uncoveredPoints.push({ x: sx, y: sy });
-                }
-            }
-        }
-    }
-
-    // Helper: get rotation candidates for a boundary point (edge-aligned + blends)
-    function getBoundaryRotations(px, py) {
-        const near = getNearestBoundarySample({ x: px, y: py }, lassoPolygon);
-        const edgeAngle = near.angleDeg;
-        // Try the edge tangent, perpendicular to edge, base rotation, and blends
-        const candidates = [
-            edgeAngle,
-            edgeAngle + 90,
-            edgeAngle - 90,
-            rotDeg,
-            // Blends between base rotation and edge tangent for smoother transitions
-            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.25,
-            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.5,
-            rotDeg + normalizeAngleDeg(edgeAngle - rotDeg) * 0.75,
-            edgeAngle + 45,
-            edgeAngle - 45,
-        ];
-        return candidates.map(a => snapAngleDeg(normalizeAngleDeg(a), 1));
-    }
-
-    // Try to cover each uncovered point
-    for (const pt of uncoveredPoints) {
-        if (objects.length >= maxObjects) break;
-        if (isPointCoveredSpatial(pt.x, pt.y)) continue; // may have been covered by a nearby placement
-
-        const rotCandidates = getBoundaryRotations(pt.x, pt.y);
-        let placed = false;
-        for (const sFrac of scaleSteps) {
-            if (placed) break;
-            const tryScale = baseRawScale * sFrac;
-            for (const tryRot of rotCandidates) {
-                if (placeTile(pt.x, pt.y, tryScale, tryRot)) {
-                    addToSpatialGrid(placedTiles[placedTiles.length - 1]);
-                    placed = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    // === PHASE 3: Final gap closure ===
-    // Even finer scan to catch any remaining micro-gaps
-    const fineSpacing = Math.max(1, minTileDim * 0.06);
-    const fineMinScale = baseRawScale * 0.04;
-
-    for (let sy = bounds.minY; sy <= bounds.maxY; sy += fineSpacing) {
-        const intersections = getScanlineIntersections(lassoPolygon, sy);
-        for (let si = 0; si + 1 < intersections.length; si += 2) {
-            const xStart = intersections[si];
-            const xEnd = intersections[si + 1];
-            for (let sx = Math.ceil(xStart / fineSpacing) * fineSpacing; sx <= xEnd; sx += fineSpacing) {
-                if (objects.length >= maxObjects) break;
-                if (isPointCoveredSpatial(sx, sy)) continue;
-                if (!pointInPolygonInclusive({ x: sx, y: sy }, lassoPolygon)) continue;
-
-                // Try progressively smaller tiles with edge-aligned rotations
-                const fineRotCandidates = getBoundaryRotations(sx, sy);
-                let finePlaced = false;
-                for (const sFrac of scaleSteps) {
-                    if (finePlaced) break;
-                    const tryScale = baseRawScale * sFrac;
-                    if (tryScale < fineMinScale) break;
-                    for (const tryRot of fineRotCandidates) {
-                        if (placeTile(sx, sy, tryScale, tryRot)) {
-                            addToSpatialGrid(placedTiles[placedTiles.length - 1]);
-                            finePlaced = true;
-                            break;
-                        }
+                for (const angle of angles) {
+                    const candidate = getFootprintForAngle(angle);
+                    if (!candidate) continue;
+                    const gain = evaluatePlacementGain(mask, coveredMask, centerIndex, maskX, maskY, candidate.footprint);
+                    if (gain > bestGain) {
+                        bestGain = gain;
+                        bestCandidate = candidate;
                     }
                 }
+
+                if (!bestCandidate || bestGain < minGain) return true;
+
+                const gained = applyPlacementCoverage(mask, coveredMask, centerIndex, bestCandidate.footprint);
+                if (gained <= 0) return true;
+
+                uncoveredCount -= gained;
+                placements.push({
+                    x: Number((mask.minX + maskX / mask.scale).toFixed(2)),
+                    y: Number((mask.minY + maskY / mask.scale).toFixed(2)),
+                    rawScale: Number(rawScale.toFixed(3)),
+                    rotation: Number(bestCandidate.angle.toFixed(2))
+                });
+
+                return true;
+            });
+        }
+    }
+
+    // Fallback pass: directly target remaining uncovered pixels with the
+    // smallest scales discovered above.
+    if (uncoveredCount > 0 && placements.length < maxObjects) {
+        const fallbackFractions = scaleFractions.slice(-Math.min(3, scaleFractions.length));
+
+        for (const fraction of fallbackFractions) {
+            if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+
+            const rawScale = baseRawScale * fraction;
+            const visualScale = getCompensatedScaleMagnitude(currentTool, rawScale);
+            const tileW = Math.max(1 / mask.scale, dims.w * visualScale);
+            const tileH = Math.max(1 / mask.scale, dims.h * visualScale);
+            const footprintCache = new Map();
+            const getFootprintForAngle = (angle) => {
+                const key = quantizeAngle(angle, 10).toFixed(3);
+                if (footprintCache.has(key)) return footprintCache.get(key);
+                const fp = buildRotatedRectFootprint(mask, tileW, tileH, Number(key));
+                const record = fp ? { angle: Number(key), footprint: fp } : null;
+                footprintCache.set(key, record);
+                return record;
+            };
+
+            const warmupAngles = buildAdaptiveRotationCandidates(baseRotationDeg, baseRotationDeg, tileW, tileH);
+            const hasAny = warmupAngles.some(a => !!getFootprintForAngle(a));
+            if (!hasAny) continue;
+
+            const stride = fraction <= fallbackFractions[fallbackFractions.length - 1] ? 1 : 2;
+
+            for (let y = 0; y < mask.height; y += stride) {
+                if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+                for (let x = 0; x < mask.width; x += stride) {
+                    if (placements.length >= maxObjects || uncoveredCount <= 0) break;
+
+                    const centerIndex = y * mask.width + x;
+                    if (!mask.inside[centerIndex] || coveredMask[centerIndex]) continue;
+
+                    const localPreferred = estimateUncoveredOrientation(mask, coveredMask, x, y, Math.max(6, Math.min(tileW, tileH) * mask.scale), baseRotationDeg);
+                    const angles = buildAdaptiveRotationCandidates(localPreferred, baseRotationDeg, tileW, tileH);
+
+                    let bestCandidate = null;
+                    let bestGain = -1;
+
+                    for (const angle of angles) {
+                        const candidate = getFootprintForAngle(angle);
+                        if (!candidate) continue;
+                        const gain = evaluatePlacementGain(mask, coveredMask, centerIndex, x, y, candidate.footprint);
+                        if (gain > bestGain) {
+                            bestGain = gain;
+                            bestCandidate = candidate;
+                        }
+                    }
+                    if (!bestCandidate || bestGain <= 0) continue;
+
+                    const gained = applyPlacementCoverage(mask, coveredMask, centerIndex, bestCandidate.footprint);
+                    if (gained <= 0) continue;
+
+                    uncoveredCount -= gained;
+                    placements.push({
+                        x: Number((mask.minX + x / mask.scale).toFixed(2)),
+                        y: Number((mask.minY + y / mask.scale).toFixed(2)),
+                        rawScale: Number(rawScale.toFixed(3)),
+                        rotation: Number(bestCandidate.angle.toFixed(2))
+                    });
+                }
             }
         }
     }
-}
 
-// Inset a polygon by a fixed pixel amount (approximate via offsetting vertices along averaged normals)
-function insetPolygonByAmount(polygon, amount) {
-    if (!polygon || polygon.length < 3) return polygon;
-    const n = polygon.length;
-    const result = [];
+    if (placements.length === 0) return;
 
-    for (let i = 0; i < n; i++) {
-        const prev = polygon[(i - 1 + n) % n];
-        const curr = polygon[i];
-        const next = polygon[(i + 1) % n];
-
-        // Edge normals (pointing inward for CW polygon, we'll check)
-        const e1x = curr.x - prev.x;
-        const e1y = curr.y - prev.y;
-        const e1Len = Math.hypot(e1x, e1y) || 1;
-        const n1x = -e1y / e1Len;
-        const n1y = e1x / e1Len;
-
-        const e2x = next.x - curr.x;
-        const e2y = next.y - curr.y;
-        const e2Len = Math.hypot(e2x, e2y) || 1;
-        const n2x = -e2y / e2Len;
-        const n2y = e2x / e2Len;
-
-        // Average normal
-        let avgNx = n1x + n2x;
-        let avgNy = n1y + n2y;
-        const avgLen = Math.hypot(avgNx, avgNy);
-        if (avgLen < 1e-9) {
-            avgNx = n1x;
-            avgNy = n1y;
-        } else {
-            avgNx /= avgLen;
-            avgNy /= avgLen;
-        }
-
-        // Determine which direction is inward by testing
-        const testInward = { x: curr.x + avgNx * 2, y: curr.y + avgNy * 2 };
-        const testOutward = { x: curr.x - avgNx * 2, y: curr.y - avgNy * 2 };
-
-        let inwardNx = avgNx;
-        let inwardNy = avgNy;
-        if (pointInPolygon(testOutward, polygon) && !pointInPolygon(testInward, polygon)) {
-            inwardNx = -avgNx;
-            inwardNy = -avgNy;
-        }
-
-        result.push({
-            x: curr.x + inwardNx * amount,
-            y: curr.y + inwardNy * amount
-        });
+    for (const placement of placements) {
+        const placementRotation = Number((placement.rotation ?? baseRotationDeg).toFixed(2));
+        objects.push(createPlacedObject(currentTool, placement.x, placement.y, placementRotation, placement.rawScale));
     }
-
-    return result;
 }
 
 function forEachTileCell(targetGridX, targetGridY, squareMode, callback) {
