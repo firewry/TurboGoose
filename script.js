@@ -5030,6 +5030,10 @@ exportBtn.addEventListener('click', () => {
     const BULLET_TOOL_TYPES = new Set(['catBullet']);
     const bullets = [];
     const genericObjects = [];
+    const shouldSkipExportedProperty = (obj, key) => {
+        const def = getDefForObjectKey(obj.type, key);
+        return !!(def && def.section === 'movement' && obj.eM !== true);
+    };
 
     for (const obj of objects) {
         if (BULLET_TOOL_TYPES.has(obj.type)) {
@@ -5047,7 +5051,7 @@ exportBtn.addEventListener('click', () => {
             for (const [key, value] of Object.entries(obj)) {
                 if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'a' || key === 'layerId') continue;
                 if (value === undefined) continue;
-                if (MOVEMENT_PROPERTY_KEYS.has(key) && obj.eM !== true) continue;
+                if (shouldSkipExportedProperty(obj, key)) continue;
                 if (key in exportedBullet) continue;
                 exportedBullet[key] = value;
             }
@@ -5073,7 +5077,7 @@ exportBtn.addEventListener('click', () => {
         for (const [key, value] of Object.entries(obj)) {
             if (key === 'type' || key === 'x' || key === 'y' || key === 'rotation' || key === 's' || key === 'layerId') continue;
             if (value === undefined) continue;
-            if (MOVEMENT_PROPERTY_KEYS.has(key) && obj.eM !== true) continue;
+            if (shouldSkipExportedProperty(obj, key)) continue;
             exportedObj[key] = value;
         }
         genericObjects.push(exportedObj);
