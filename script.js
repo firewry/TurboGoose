@@ -4,6 +4,7 @@ ctx.imageSmoothingEnabled = false;
 const editorContainer = document.getElementById('editor-container');
 const propPanel = document.getElementById('properties-panel');
 const propColorInput = document.getElementById('prop-blockColor');
+const propColorPickerBtn = document.getElementById('prop-color-picker-btn');
 const propColorRow = document.getElementById('prop-color-row');
 const propFieldsContainer = document.getElementById('properties-fields');
 const movementDetailsEl = document.getElementById('movement-details');
@@ -18,17 +19,25 @@ const layerAddBtn = document.getElementById('layer-add-btn');
 const layerDeleteBtn = document.getElementById('layer-delete-btn');
 const layerRenameBtn = document.getElementById('layer-rename-btn');
 const layerDuplicateBtn = document.getElementById('layer-duplicate-btn');
+const imageOverlayModal = document.getElementById('image-overlay-modal');
+const imageOverlayDropzone = document.getElementById('image-overlay-dropzone');
+const imageOverlayFileInput = document.getElementById('image-overlay-file-input');
+const imageOverlayCancelBtn = document.getElementById('image-overlay-cancel-btn');
 
 const toolPropertyOverrides = {};
 let layerState = {
     nextId: 2,
     activeId: 1,
     items: [
-        { id: 1, name: 'Layer 1', hidden: false }
+        { id: 1, name: 'Layer 1', hidden: false, kind: 'objects' }
     ]
 };
 let draggingLayerId = null;
 let objectClipboard = [];
+const OVERLAY_MIN_SCALE = 0.05;
+const OVERLAY_MAX_SCALE = 20;
+const OVERLAY_ALPHA = 0.48;
+const overlayImageCache = new Map();
 // Cache of base z values per layer id, computed by updateObjectLayerDepths()
 let layerBaseZCache = new Map();
 const BASE_OBJECT_PROPERTY_DEFS = [
@@ -147,6 +156,69 @@ function getLayerById(id) {
     return layerState.items.find(layer => layer.id === id) || null;
 }
 
+function createDefaultObjectLayer(id, name) {
+    return {
+        id,
+        name: name || `Layer ${id}`,
+        hidden: false,
+        kind: 'objects'
+    };
+}
+
+function isOverlayLayer(layer) {
+    return !!(layer && layer.kind === 'imageOverlay');
+}
+
+function normalizeLayerShape(layer) {
+    if (!layer || typeof layer !== 'object') return null;
+    if (isOverlayLayer(layer)) {
+        const overlay = layer.overlay || {};
+        return {
+            id: layer.id,
+            name: layer.name || `Overlay ${layer.id}`,
+            hidden: !!layer.hidden,
+            kind: 'imageOverlay',
+            overlay: {
+                src: typeof overlay.src === 'string' ? overlay.src : '',
+                x: Number.isFinite(overlay.x) ? overlay.x : 0,
+                y: Number.isFinite(overlay.y) ? overlay.y : 0,
+                scale: Number.isFinite(overlay.scale) ? overlay.scale : 1,
+                rotation: Number.isFinite(overlay.rotation) ? overlay.rotation : 0
+            }
+        };
+    }
+    return {
+        id: layer.id,
+        name: layer.name || `Layer ${layer.id}`,
+        hidden: !!layer.hidden,
+        kind: 'objects'
+    };
+}
+
+function isActiveLayerObjectLocked() {
+    return isOverlayLayer(getActiveLayer());
+}
+
+function getOverlayImageForLayer(layer) {
+    if (!isOverlayLayer(layer) || !layer.overlay || !layer.overlay.src) return null;
+    const src = layer.overlay.src;
+    if (overlayImageCache.has(src)) {
+        return overlayImageCache.get(src);
+    }
+    const img = new Image();
+    img.onload = () => draw();
+    img.onerror = () => draw();
+    img.src = src;
+    overlayImageCache.set(src, img);
+    return img;
+}
+
+function getActiveOverlayData() {
+    const active = getActiveLayer();
+    if (!isOverlayLayer(active) || !active.overlay || !active.overlay.src) return null;
+    return active.overlay;
+}
+
 function getLayerIndexById(id) {
     return layerState.items.findIndex(layer => layer.id === id);
 }
@@ -211,6 +283,10 @@ function updateObjectLayerDepths() {
 }
 
 function normalizeLayerStateForObjects() {
+    layerState.items = layerState.items
+        .map(layer => normalizeLayerShape(layer))
+        .filter(Boolean);
+
     const objectList = objects.filter(obj => obj && obj.type !== 'finishLine');
     const hasLayerIds = objectList.some(obj => getLayerById(obj.layerId));
 
@@ -226,7 +302,7 @@ function normalizeLayerStateForObjects() {
         layerState.items = [];
         for (let i = 0; i < neededLayers; i++) {
             const id = i + 1;
-            layerState.items.push({ id, name: `Layer ${id}`, hidden: false });
+            layerState.items.push(createDefaultObjectLayer(id));
         }
         layerState.nextId = neededLayers + 1;
         layerState.activeId = layerState.items[0].id;
@@ -253,12 +329,17 @@ function isObjectEditableInCurrentLayer(obj) {
     if (!obj || obj.type === 'finishLine') return true;
     const active = getActiveLayer();
     if (!active) return true;
+    if (isOverlayLayer(active)) return false;
     const layer = getLayerById(obj.layerId);
     if (layer && layer.hidden) return false;
     return obj.layerId === active.id;
 }
 
 function sanitizeSelectionForActiveLayer() {
+    if (isActiveLayerObjectLocked()) {
+        selectedObjects = [];
+        return;
+    }
     selectedObjects = selectedObjects.filter(obj => obj.type === 'finishLine' || isObjectEditableInCurrentLayer(obj));
 }
 
@@ -348,6 +429,17 @@ function renderLayersUI() {
         row.dataset.layerId = String(layer.id);
         row.draggable = true;
 
+        const mainEl = document.createElement('div');
+        mainEl.className = 'layer-main';
+
+        if (isOverlayLayer(layer)) {
+            const badge = document.createElement('span');
+            badge.className = 'layer-overlay-badge';
+            badge.title = 'Image Overlay Layer';
+            badge.innerHTML = '<i class="fa-regular fa-image" aria-hidden="true"></i>';
+            mainEl.appendChild(badge);
+        }
+
         const nameEl = document.createElement('span');
         nameEl.className = 'layer-name';
         nameEl.textContent = layer.name;
@@ -355,6 +447,7 @@ function renderLayersUI() {
             e.stopPropagation();
             startInlineLayerRename(layer.id);
         });
+        mainEl.appendChild(nameEl);
 
         const hideBtn = document.createElement('button');
         hideBtn.className = 'layer-hide-btn';
@@ -375,6 +468,10 @@ function renderLayersUI() {
         row.addEventListener('click', () => {
             layerState.activeId = layer.id;
             sanitizeSelectionForActiveLayer();
+            if (isOverlayLayer(layer)) {
+                currentTool = 'none';
+                updateToolbarActiveTool();
+            }
             renderLayersUI();
             draw();
         });
@@ -416,10 +513,11 @@ function renderLayersUI() {
                 moveLayer(draggingLayerId, layer.id, placeAfter);
                 layerState.activeId = draggingLayerId;
                 renderLayersUI();
+                draw();
             });
         });
 
-        row.appendChild(nameEl);
+        row.appendChild(mainEl);
         row.appendChild(hideBtn);
         layersListEl.appendChild(row);
     }
@@ -428,7 +526,7 @@ function renderLayersUI() {
 function createLayer() {
     runUndoableAction(() => {
         const id = layerState.nextId++;
-        const layer = { id, name: `Layer ${id}`, hidden: false };
+        const layer = createDefaultObjectLayer(id);
         const activeIndex = layerState.items.findIndex(item => item.id === layerState.activeId);
         const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
         layerState.items.splice(insertIndex, 0, layer);
@@ -465,26 +563,28 @@ function duplicateActiveLayer() {
     runUndoableAction(() => {
         const sourceLayerId = active.id;
         const id = layerState.nextId++;
-        const copy = {
+        const copy = normalizeLayerShape({
+            ...deepClone(active),
             id,
-            name: `${active.name} Copy`,
-            hidden: active.hidden
-        };
+            name: `${active.name} Copy`
+        });
 
         const activeIndex = layerState.items.findIndex(layer => layer.id === active.id);
         const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
         layerState.items.splice(insertIndex, 0, copy);
 
-        // Duplicate all objects from the source layer into the new copied layer.
-        const duplicatedObjects = objects
-            .filter(obj => obj.type !== 'finishLine' && obj.layerId === sourceLayerId)
-            .map(obj => {
-                const clone = deepClone(obj);
-                assignLayerToObject(clone, id);
-                return clone;
-            });
-        if (duplicatedObjects.length > 0) {
-            objects.push(...duplicatedObjects);
+        if (!isOverlayLayer(active)) {
+            // Duplicate all objects from the source layer into the new copied layer.
+            const duplicatedObjects = objects
+                .filter(obj => obj.type !== 'finishLine' && obj.layerId === sourceLayerId)
+                .map(obj => {
+                    const clone = deepClone(obj);
+                    assignLayerToObject(clone, id);
+                    return clone;
+                });
+            if (duplicatedObjects.length > 0) {
+                objects.push(...duplicatedObjects);
+            }
         }
 
         layerState.activeId = id;
@@ -538,6 +638,132 @@ function setupLayersUI() {
     if (layerRenameBtn) layerRenameBtn.addEventListener('click', renameActiveLayer);
     if (layerDuplicateBtn) layerDuplicateBtn.addEventListener('click', duplicateActiveLayer);
     renderLayersUI();
+}
+
+function getViewportCenterWorld() {
+    return {
+        x: (-camera.x + width / 2) / camera.zoom,
+        y: (-camera.y + height / 2) / camera.zoom
+    };
+}
+
+function closeImageOverlayModal() {
+    if (!imageOverlayModal) return;
+    imageOverlayModal.classList.add('hidden');
+    if (imageOverlayDropzone) imageOverlayDropzone.classList.remove('drag-over');
+    if (imageOverlayFileInput) imageOverlayFileInput.value = '';
+}
+
+function openImageOverlayModal() {
+    if (!imageOverlayModal) return;
+    imageOverlayModal.classList.remove('hidden');
+    if (imageOverlayDropzone) imageOverlayDropzone.focus();
+}
+
+function createImageOverlayLayerFromDataUrl(dataUrl) {
+    if (!dataUrl) return;
+
+    runUndoableAction(() => {
+        const id = layerState.nextId++;
+        const center = getViewportCenterWorld();
+        const layer = {
+            id,
+            name: `Overlay ${id}`,
+            hidden: false,
+            kind: 'imageOverlay',
+            overlay: {
+                src: dataUrl,
+                x: Number(center.x.toFixed(2)),
+                y: Number(center.y.toFixed(2)),
+                scale: 1,
+                rotation: 0
+            }
+        };
+
+        const activeIndex = layerState.items.findIndex(item => item.id === layerState.activeId);
+        const insertIndex = activeIndex >= 0 ? activeIndex : layerState.items.length;
+        layerState.items.splice(insertIndex, 0, layer);
+        layerState.activeId = id;
+        selectedObjects = [];
+        currentTool = 'none';
+        updateToolbarActiveTool();
+        renderLayersUI();
+        draw();
+    });
+}
+
+function processOverlayImageFile(file) {
+    if (!file || !file.type || !file.type.startsWith('image/')) {
+        alert('Please provide an image file.');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : '';
+        if (!result) return;
+        closeImageOverlayModal();
+        createImageOverlayLayerFromDataUrl(result);
+    };
+    reader.onerror = () => {
+        alert('Failed to read image file.');
+    };
+    reader.readAsDataURL(file);
+}
+
+function setupImageOverlayModal() {
+    if (!imageOverlayModal || !imageOverlayDropzone || !imageOverlayFileInput) return;
+
+    imageOverlayDropzone.addEventListener('click', () => imageOverlayFileInput.click());
+    imageOverlayDropzone.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            imageOverlayFileInput.click();
+        }
+    });
+
+    imageOverlayFileInput.addEventListener('change', () => {
+        const file = imageOverlayFileInput.files && imageOverlayFileInput.files[0];
+        processOverlayImageFile(file);
+    });
+
+    imageOverlayDropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        imageOverlayDropzone.classList.add('drag-over');
+    });
+
+    imageOverlayDropzone.addEventListener('dragleave', () => {
+        imageOverlayDropzone.classList.remove('drag-over');
+    });
+
+    imageOverlayDropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        imageOverlayDropzone.classList.remove('drag-over');
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        processOverlayImageFile(file);
+    });
+
+    window.addEventListener('paste', (e) => {
+        if (imageOverlayModal.classList.contains('hidden')) return;
+        const items = e.clipboardData ? Array.from(e.clipboardData.items || []) : [];
+        const imageItem = items.find(item => item.type && item.type.startsWith('image/'));
+        if (!imageItem) return;
+        e.preventDefault();
+        const file = imageItem.getAsFile();
+        processOverlayImageFile(file);
+    });
+
+    if (imageOverlayCancelBtn) {
+        imageOverlayCancelBtn.addEventListener('click', () => {
+            closeImageOverlayModal();
+        });
+    }
+
+    imageOverlayModal.addEventListener('click', (e) => {
+        if (e.target === imageOverlayModal) {
+            closeImageOverlayModal();
+        }
+    });
 }
 
 function setupLeftPanelToggle() {
@@ -786,6 +1012,14 @@ async function loadObjectConfigs() {
         const toolBtns = document.querySelectorAll('.tool-btn[data-tool]');
         toolBtns.forEach(btn => {
             btn.addEventListener('click', () => {
+                if (isColorPicking) setColorPickerActive(false);
+                if (btn.dataset.tool === 'imageOverlay') {
+                    currentTool = 'none';
+                    updateToolbarActiveTool();
+                    openImageOverlayModal();
+                    draw();
+                    return;
+                }
                 toolBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentTool = btn.dataset.tool;
@@ -1001,6 +1235,10 @@ let previewY = 0;
 let previewRotation = 0;
 let previewScale = 1;
 let isMouseOnCanvas = false;
+let mouseCanvasPos = { x: 0, y: 0 };
+let isColorPicking = false;
+let hoveredOverlayLayerId = null;
+let sampledPickColor = null;
 
 // Selection & Drag State
 let selectedObjects = [];
@@ -1013,6 +1251,8 @@ let dragStartMouse = { x: 0, y: 0 };
 let dragAnchorStart = { x: 0, y: 0 };
 let dragLastAppliedOffset = { x: 0, y: 0 };
 let dragSelectionStartStates = [];
+let isDraggingOverlay = false;
+let overlayDragOffset = { x: 0, y: 0 };
 
 let isTiling = false;
 let tileAnchor = { x: 0, y: 0 };
@@ -2031,6 +2271,7 @@ function isRotatedRectInsidePolygon(cx, cy, w, h, rotationDeg, polygon) {
 function fillLassoWithCurrentTool() {
     if (!lassoPolygon || lassoPolygon.length < 3) return;
     if (!objectConfigs[currentTool]) return;
+    if (isActiveLayerObjectLocked()) return;
 
     const dims = getToolDimensions(currentTool);
     const baseRawScale = Math.abs(previewScale || 1);
@@ -2430,6 +2671,7 @@ function updateSquarePlacement(gridX, gridY, cellW, cellH, rad) {
 }
 
 function placeObjectAtWorld(x, y) {
+    if (isActiveLayerObjectLocked()) return null;
     const obj = createPlacedObject(currentTool, x, y, previewRotation, previewScale);
     objects.push(obj);
     markUndoDirty();
@@ -2520,6 +2762,204 @@ function getCompensatedScaleMagnitude(tool, signedScale) {
     return Math.abs(getCompensatedRenderScale(tool, signedScale));
 }
 
+function rgbToHex(r, g, b) {
+    const toHex = (value) => Math.max(0, Math.min(255, value | 0)).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function hexToRgb(hex) {
+    if (typeof hex !== 'string') return null;
+    const raw = hex.trim();
+    if (!raw.startsWith('#')) return null;
+    const value = raw.slice(1);
+    if (value.length === 3) {
+        const r = parseInt(value[0] + value[0], 16);
+        const g = parseInt(value[1] + value[1], 16);
+        const b = parseInt(value[2] + value[2], 16);
+        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+        return { r, g, b };
+    }
+    if (value.length === 6) {
+        const r = parseInt(value.slice(0, 2), 16);
+        const g = parseInt(value.slice(2, 4), 16);
+        const b = parseInt(value.slice(4, 6), 16);
+        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+        return { r, g, b };
+    }
+    return null;
+}
+
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
+function getBackgroundColorAtScreen(screenY) {
+    const top = hexToRgb(levelConfig.gradientTopColor) || { r: 0, g: 157, b: 255 };
+    const bottom = hexToRgb(levelConfig.gradientBottomColor) || { r: 194, g: 204, b: 255 };
+    const h = Math.max(1, canvas.height - 1);
+    const t = Math.max(0, Math.min(1, screenY / h));
+    return rgbToHex(
+        Math.round(lerp(top.r, bottom.r, t)),
+        Math.round(lerp(top.g, bottom.g, t)),
+        Math.round(lerp(top.b, bottom.b, t))
+    );
+}
+
+function sampleCanvasColorAtScreen(x, y) {
+    const px = Math.max(0, Math.min(canvas.width - 1, Math.round(x)));
+    const py = Math.max(0, Math.min(canvas.height - 1, Math.round(y)));
+    try {
+        const pixel = ctx.getImageData(px, py, 1, 1).data;
+        if (!pixel || pixel.length < 4 || pixel[3] === 0) return null;
+        return rgbToHex(pixel[0], pixel[1], pixel[2]);
+    } catch (err) {
+        return null;
+    }
+}
+
+function getObjectsAtPointInLayer(layerId, x, y) {
+    const hits = [];
+    for (let i = 0; i < objects.length; i++) {
+        const obj = objects[i];
+        if (!obj || !obj.type || obj.layerId !== layerId) continue;
+        const config = objectConfigs[obj.type];
+        if (!config) continue;
+
+        const dims = getRenderDimensions(obj.type);
+        const visualScale = getCompensatedScaleMagnitude(obj.type, obj.s || 1);
+        const w = dims.w * visualScale;
+        const h = dims.h * visualScale;
+
+        if (!pointInRotatedRect({ x, y }, obj.x, obj.y, w, h, obj.rotation || 0)) continue;
+        hits.push({ obj, index: i });
+    }
+
+    hits.sort((a, b) => {
+        const za = Number.isFinite(a.obj.z) ? a.obj.z : 0;
+        const zb = Number.isFinite(b.obj.z) ? b.obj.z : 0;
+        if (za !== zb) return zb - za;
+        return b.index - a.index;
+    });
+
+    return hits.map(hit => hit.obj);
+}
+
+function getTopUnlayeredObjectAtPoint(x, y) {
+    const hits = [];
+    for (let i = 0; i < objects.length; i++) {
+        const obj = objects[i];
+        if (!obj || !obj.type || getLayerById(obj.layerId)) continue;
+        const config = objectConfigs[obj.type];
+        if (!config) continue;
+
+        const dims = getRenderDimensions(obj.type);
+        const visualScale = getCompensatedScaleMagnitude(obj.type, obj.s || 1);
+        const w = dims.w * visualScale;
+        const h = dims.h * visualScale;
+
+        if (!pointInRotatedRect({ x, y }, obj.x, obj.y, w, h, obj.rotation || 0)) continue;
+        hits.push({ obj, index: i });
+    }
+
+    hits.sort((a, b) => {
+        const za = Number.isFinite(a.obj.z) ? a.obj.z : 0;
+        const zb = Number.isFinite(b.obj.z) ? b.obj.z : 0;
+        if (za !== zb) return zb - za;
+        return b.index - a.index;
+    });
+
+    return hits.length > 0 ? hits[0].obj : null;
+}
+
+function getOverlayLayerAtPoint(x, y) {
+    for (let i = 0; i < layerState.items.length; i++) {
+        const layer = layerState.items[i];
+        if (!isOverlayLayer(layer) || layer.hidden) continue;
+        const overlay = layer.overlay;
+        if (!overlay || !overlay.src) continue;
+
+        const img = getOverlayImageForLayer(layer);
+        const overlayScale = Math.max(OVERLAY_MIN_SCALE, Number(overlay.scale) || 1);
+        const baseW = (img && img.naturalWidth) ? img.naturalWidth : 300;
+        const baseH = (img && img.naturalHeight) ? img.naturalHeight : 200;
+        const drawW = baseW * overlayScale;
+        const drawH = baseH * overlayScale;
+
+        if (pointInRotatedRect({ x, y }, overlay.x || 0, overlay.y || 0, drawW, drawH, overlay.rotation || 0)) {
+            return layer;
+        }
+    }
+    return null;
+}
+
+function getTopPickTargetAtPoint(x, y) {
+    const unlayered = getTopUnlayeredObjectAtPoint(x, y);
+    if (unlayered) return { kind: 'object', obj: unlayered };
+
+    for (let i = 0; i < layerState.items.length; i++) {
+        const layer = layerState.items[i];
+        if (!layer || layer.hidden) continue;
+
+        if (isOverlayLayer(layer)) {
+            const overlayHit = getOverlayLayerAtPoint(x, y);
+            if (overlayHit && overlayHit.id === layer.id) {
+                return { kind: 'overlay', layer };
+            }
+            continue;
+        }
+
+        const hits = getObjectsAtPointInLayer(layer.id, x, y);
+        if (hits.length > 0) {
+            return { kind: 'object', obj: hits[0] };
+        }
+    }
+
+    return null;
+}
+
+function resolvePickColorAtPoint(gameX, gameY, screenX, screenY) {
+    const target = getTopPickTargetAtPoint(gameX, gameY);
+    if (target && target.kind === 'object') {
+        const config = objectConfigs[target.obj.type];
+        if (config && config.colorable && target.obj.color) {
+            return target.obj.color;
+        }
+    }
+
+    const sampled = sampleCanvasColorAtScreen(screenX, screenY);
+    if (sampled) return sampled;
+    return getBackgroundColorAtScreen(screenY);
+}
+
+function applyColorToCurrentContext(val) {
+    const color = typeof val === 'string' ? val : '#ffffff';
+    levelConfig.lastUsedColor = color;
+
+    if (selectedObjects.length > 0) {
+        selectedObjects.forEach(obj => {
+            if (objectConfigs[obj.type] && objectConfigs[obj.type].colorable) {
+                obj.color = color;
+            }
+        });
+    }
+
+    if (propColorInput) propColorInput.value = color;
+}
+
+function setColorPickerActive(active) {
+    isColorPicking = !!active;
+    sampledPickColor = null;
+    if (propColorPickerBtn) {
+        propColorPickerBtn.classList.toggle('active', isColorPicking);
+        propColorPickerBtn.title = isColorPicking
+            ? 'Click a color on the canvas to apply'
+            : 'Pick Color From Screen or Reference';
+    }
+    canvas.style.cursor = isColorPicking ? 'crosshair' : 'default';
+    if (!isColorPicking) hoveredOverlayLayerId = null;
+    draw();
+}
+
 // Resize canvas
 function resizeCanvas() {
     width = window.innerWidth;
@@ -2545,6 +2985,7 @@ const clearBtn = document.getElementById('clear-btn');
 setupLeftPanelToggle();
 setupLeftPanelResize();
 setupLayersUI();
+setupImageOverlayModal();
 
 // Toggle panel
 togglePanelBtn.addEventListener('click', () => {
@@ -2569,7 +3010,7 @@ if (clearBtn) {
                     nextId: 2,
                     activeId: 1,
                     items: [
-                        { id: 1, name: 'Layer 1', hidden: false }
+                        { id: 1, name: 'Layer 1', hidden: false, kind: 'objects' }
                     ]
                 };
                 birdStart = { x: 100, y: 300 };
@@ -2584,7 +3025,7 @@ if (clearBtn) {
                     gradientBottomColor: '#c2ccff',
                     lastUsedColor: '#ff0000'
                 };
-                toolPropertyOverrides = {};
+                Object.keys(toolPropertyOverrides).forEach(key => delete toolPropertyOverrides[key]);
                 if (editorContainer) {
                     editorContainer.style.background = `linear-gradient(to bottom, ${levelConfig.gradientTopColor}, ${levelConfig.gradientBottomColor})`;
                 }
@@ -2597,6 +3038,18 @@ if (clearBtn) {
 
 // Keyboard Interaction
 window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && imageOverlayModal && !imageOverlayModal.classList.contains('hidden')) {
+        e.preventDefault();
+        closeImageOverlayModal();
+        return;
+    }
+
+    if (e.key === 'Escape' && isColorPicking) {
+        e.preventDefault();
+        setColorPickerActive(false);
+        return;
+    }
+
     // Text tool input handling
     if (textToolState === 'editing') {
         if (e.key === 'Enter') {
@@ -2664,6 +3117,11 @@ window.addEventListener('keydown', (e) => {
     // Paste objects (Ctrl+V)
     if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
         if (objectClipboard.length > 0) {
+            if (isActiveLayerObjectLocked()) {
+                e.preventDefault();
+                alert('Object placement is disabled on image overlay layers. Switch to a normal layer first.');
+                return;
+            }
             e.preventDefault();
             runUndoableAction(() => {
                 const activeLayer = getActiveLayer();
@@ -2793,9 +3251,15 @@ window.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // Canvas Interaction
-canvas.addEventListener('mouseenter', () => isMouseOnCanvas = true);
+canvas.addEventListener('mouseenter', () => {
+    isMouseOnCanvas = true;
+    if (isColorPicking) canvas.style.cursor = 'crosshair';
+});
 canvas.addEventListener('mouseleave', () => {
     isMouseOnCanvas = false;
+    hoveredOverlayLayerId = null;
+    sampledPickColor = null;
+    if (!isPanning) canvas.style.cursor = 'default';
     draw();
 });
 
@@ -2808,18 +3272,35 @@ canvas.addEventListener('mousedown', (e) => {
     }
 
     const rect = canvas.getBoundingClientRect();
+    mouseCanvasPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     // Convert screen coordinates to game world coordinates
     let gameX = (e.clientX - rect.left - camera.x) / camera.zoom;
     let gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
 
     // Apply grid snap
-    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text') {
+    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text' && currentTool !== 'imageOverlay') {
         const snapped = applyGridSnap(gameX, gameY);
         gameX = snapped.x;
         gameY = snapped.y;
     }
 
     if (e.button === 0) { // Left click
+        if (isColorPicking) {
+            const topTarget = getTopPickTargetAtPoint(gameX, gameY);
+            hoveredOverlayLayerId = (topTarget && topTarget.kind === 'overlay') ? topTarget.layer.id : null;
+            const picked = sampledPickColor || resolvePickColorAtPoint(gameX, gameY, mouseCanvasPos.x, mouseCanvasPos.y);
+
+            if (picked) {
+                runUndoableAction(() => {
+                    applyColorToCurrentContext(picked);
+                    setColorPickerActive(false);
+                });
+            } else {
+                setColorPickerActive(false);
+            }
+            return;
+        }
+
         if (currentTool === 'grid') {
             const clickedObj = getObjectAt(gameX, gameY);
             if (clickedObj && clickedObj.type !== 'finishLine' && objectConfigs[clickedObj.type]) {
@@ -2901,6 +3382,11 @@ canvas.addEventListener('mousedown', (e) => {
             return;
         }
 
+        if (currentTool !== 'none' && objectConfigs[currentTool] && isActiveLayerObjectLocked()) {
+            alert('Object placement is disabled on image overlay layers. Switch to a normal layer first.');
+            return;
+        }
+
         if (lassoPolygon.length >= 3) {
             if (currentTool !== 'none' && canPreviewLassoFillAt(gameX, gameY)) {
                 runUndoableAction(() => {
@@ -2928,9 +3414,22 @@ canvas.addEventListener('mousedown', (e) => {
             lastTileGrid = { x: 0, y: 0 };
             tiledLocations.add('0,0');
             const anchorObj = placeObjectAtWorld(gameX, gameY);
-            placedTilesThisDrag.set('0,0', anchorObj);
+            if (anchorObj) placedTilesThisDrag.set('0,0', anchorObj);
             draw();
         } else if (currentTool === 'none') {
+            const activeOverlay = getActiveOverlayData();
+            if (activeOverlay) {
+                beginUndoBatch();
+                selectedObjects = [];
+                isDraggingOverlay = true;
+                overlayDragOffset = {
+                    x: gameX - activeOverlay.x,
+                    y: gameY - activeOverlay.y
+                };
+                markUndoDirty();
+                draw();
+                return;
+            }
             beginUndoBatch();
             let clickedObj = getObjectAt(gameX, gameY);
             if (clickedObj) {
@@ -2958,6 +3457,11 @@ canvas.addEventListener('mousedown', (e) => {
             draw();
         }
     } else if (e.button === 2) { // Right click
+        if (isColorPicking) {
+            setColorPickerActive(false);
+            return;
+        }
+
         if (currentTool === 'grid') {
             activeGrid = null;
             draw();
@@ -2999,6 +3503,7 @@ canvas.addEventListener('mousedown', (e) => {
 
 canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
+    mouseCanvasPos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
     if (isPanning) {
         camera.x = e.clientX - startPan.x;
@@ -3010,7 +3515,7 @@ canvas.addEventListener('mousemove', (e) => {
     let gameY = (e.clientY - rect.top - camera.y) / camera.zoom;
 
     // Apply grid snap
-    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text') {
+    if (activeGrid && currentTool !== 'grid' && currentTool !== 'none' && currentTool !== 'lasso' && currentTool !== 'brush' && currentTool !== 'text' && currentTool !== 'imageOverlay') {
         const snapped = applyGridSnap(gameX, gameY);
         gameX = snapped.x;
         gameY = snapped.y;
@@ -3077,6 +3582,13 @@ canvas.addEventListener('mousemove', (e) => {
             deleteObjectsTouchingStroke(deleteLastPoint.x, deleteLastPoint.y, deleteCurrentPoint.x, deleteCurrentPoint.y, deleteBrushRadius);
             deleteLastPoint = { ...deleteCurrentPoint };
         }
+    } else if (isDraggingOverlay) {
+        const activeOverlay = getActiveOverlayData();
+        if (activeOverlay) {
+            activeOverlay.x = Number((gameX - overlayDragOffset.x).toFixed(2));
+            activeOverlay.y = Number((gameY - overlayDragOffset.y).toFixed(2));
+            markUndoDirty();
+        }
     } else if (isDraggingObjects) {
         let dx = gameX - dragStartMouse.x;
         let dy = gameY - dragStartMouse.y;
@@ -3115,6 +3627,15 @@ canvas.addEventListener('mousemove', (e) => {
     // Always update preview coordinates if mouse is on canvas
     previewX = gameX;
     previewY = gameY;
+
+    if (isColorPicking) {
+        const topTarget = getTopPickTargetAtPoint(gameX, gameY);
+        hoveredOverlayLayerId = (topTarget && topTarget.kind === 'overlay') ? topTarget.layer.id : null;
+        sampledPickColor = resolvePickColorAtPoint(gameX, gameY, mouseCanvasPos.x, mouseCanvasPos.y);
+    } else {
+        hoveredOverlayLayerId = null;
+        sampledPickColor = null;
+    }
     
     draw();
 });
@@ -3122,7 +3643,7 @@ canvas.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mouseup', (e) => {
     if (e.button === 1) {
         isPanning = false;
-        canvas.style.cursor = 'default';
+        canvas.style.cursor = isColorPicking ? 'crosshair' : 'default';
     }
     if (e.button === 0) {
         if (isResizingText) {
@@ -3157,6 +3678,9 @@ canvas.addEventListener('mouseup', (e) => {
                 obj.y = Number(obj.y.toFixed(2));
             });
         }
+        if (isDraggingOverlay) {
+            isDraggingOverlay = false;
+        }
         isDraggingObjects = false;
         dragSelectionStartStates = [];
         isBoxSelecting = false;
@@ -3177,7 +3701,7 @@ canvas.addEventListener('mouseup', (e) => {
 });
 
 window.addEventListener('mouseup', () => {
-    if (isDrawingLasso || isTiling || isDraggingObjects || isBoxSelecting) {
+    if (isDrawingLasso || isTiling || isDraggingObjects || isBoxSelecting || isDraggingOverlay) {
         if (isDrawingLasso) {
             isDrawingLasso = false;
             if (lassoDraftPoints.length >= 2) {
@@ -3194,6 +3718,7 @@ window.addEventListener('mouseup', () => {
         isTiling = false;
         placedTilesThisDrag.clear();
         isDraggingObjects = false;
+        isDraggingOverlay = false;
         dragSelectionStartStates = [];
         isBoxSelecting = false;
         endUndoBatch();
@@ -3219,6 +3744,16 @@ canvas.addEventListener('wheel', (e) => {
     if (e.altKey) {
         const scaleSpeed = 0.1;
         const factor = e.deltaY > 0 ? (1 - scaleSpeed) : (1 + scaleSpeed);
+
+        const activeOverlay = getActiveOverlayData();
+        if (activeOverlay && currentTool === 'none') {
+            runUndoableAction(() => {
+                const nextScale = Math.max(OVERLAY_MIN_SCALE, Math.min(OVERLAY_MAX_SCALE, activeOverlay.scale * factor));
+                activeOverlay.scale = Number(nextScale.toFixed(3));
+                draw();
+            });
+            return;
+        }
 
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
@@ -3285,6 +3820,16 @@ canvas.addEventListener('wheel', (e) => {
     if (e.ctrlKey) {
         const rotationSpeed = 5; 
         const amount = e.deltaY > 0 ? rotationSpeed : -rotationSpeed;
+
+        const activeOverlay = getActiveOverlayData();
+        if (activeOverlay && currentTool === 'none') {
+            runUndoableAction(() => {
+                activeOverlay.rotation = (activeOverlay.rotation + amount + 360) % 360;
+                activeOverlay.rotation = Number(activeOverlay.rotation.toFixed(2));
+                draw();
+            });
+            return;
+        }
         
         if (currentTool === 'none' && selectedObjects.length > 0) {
             runUndoableAction(() => {
@@ -3384,85 +3929,154 @@ function draw() {
         ctx.translate(camera.x, camera.y);
         ctx.scale(camera.zoom, camera.zoom);
 
-    // Draw objects (render in array order so newest objects appear on top)
+    // Draw objects and overlays by layer order (bottom to top).
     const sortedObjects = [...objects].sort((a, b) => {
         const za = Number.isFinite(a.z) ? a.z : 0;
         const zb = Number.isFinite(b.z) ? b.z : 0;
         return za - zb;
     });
 
-    sortedObjects.forEach(obj => {
+    const objectsByLayer = new Map();
+    for (const obj of sortedObjects) {
+        if (!objectsByLayer.has(obj.layerId)) objectsByLayer.set(obj.layerId, []);
+        objectsByLayer.get(obj.layerId).push(obj);
+    }
+
+    const drawObjectSprite = (obj) => {
         if (isLayerHiddenForObject(obj)) return;
         const config = objectConfigs[obj.type];
-        if (config) {
-            const isDimmed = !isObjectEditableInCurrentLayer(obj);
-            ctx.save();
-            if (isDimmed) {
-                ctx.globalAlpha = 0.72;
-            }
-            ctx.translate(obj.x, obj.y);
-            ctx.rotate(obj.rotation * Math.PI / 180);
-            if (obj.s !== undefined && obj.s !== 1) {
-                const compensatedScale = getCompensatedRenderScale(obj.type, obj.s);
-                ctx.scale(compensatedScale, compensatedScale);
-            }
+        if (!config) return;
 
-            const img = objectImages[obj.type];
-            const dims = getRenderDimensions(obj.type);
-            const w = dims.w;
-            const h = dims.h;
+        const isDimmed = !isObjectEditableInCurrentLayer(obj);
+        ctx.save();
+        if (isDimmed) {
+            ctx.globalAlpha = 0.72;
+        }
+        ctx.translate(obj.x, obj.y);
+        ctx.rotate(obj.rotation * Math.PI / 180);
+        if (obj.s !== undefined && obj.s !== 1) {
+            const compensatedScale = getCompensatedRenderScale(obj.type, obj.s);
+            ctx.scale(compensatedScale, compensatedScale);
+        }
 
-            if (img && img.complete) {
+        const img = objectImages[obj.type];
+        const dims = getRenderDimensions(obj.type);
+        const w = dims.w;
+        const h = dims.h;
 
-                if (config.colorable) {
-                    drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
-                } else {
-                    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-                }
+        if (img && img.complete) {
+            if (config.colorable) {
+                drawTintedImage(ctx, img, obj.color || '#ffffff', -w / 2, -h / 2, w, h);
             } else {
-                ctx.fillStyle = config.fallbackColor || '#ff8888';
-                ctx.fillRect(-w / 2, -h / 2, w, h);
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
             }
+        } else {
+            ctx.fillStyle = config.fallbackColor || '#ff8888';
+            ctx.fillRect(-w / 2, -h / 2, w, h);
+        }
 
-            if (selectedObjects.includes(obj)) {
-                ctx.strokeStyle = config.highlight || '#00ffcc';
-                const zoomComp = Math.max(1, camera.zoom);
-                const outlinePad = 1.65 / zoomComp;
-                ctx.lineWidth = 1.9 / zoomComp;
-                ctx.strokeRect(-w / 2 - outlinePad, -h / 2 - outlinePad, w + outlinePad * 2, h + outlinePad * 2);
-            }
+        if (selectedObjects.includes(obj)) {
+            ctx.strokeStyle = config.highlight || '#00ffcc';
+            const zoomComp = Math.max(1, camera.zoom);
+            const outlinePad = 1.65 / zoomComp;
+            ctx.lineWidth = 1.9 / zoomComp;
+            ctx.strokeRect(-w / 2 - outlinePad, -h / 2 - outlinePad, w + outlinePad * 2, h + outlinePad * 2);
+        }
+        ctx.restore();
+
+        if (objectHasMovementEnabled(obj)) {
+            const moveAngle = Number(obj.mA) || 0;
+            const moveSpeed = Math.abs(Number(obj.mS) || 0);
+            const arrowLen = 26 + Math.min(42, moveSpeed * 3.5);
+            const endX = obj.x + Math.cos(moveAngle) * arrowLen;
+            const endY = obj.y + Math.sin(moveAngle) * arrowLen;
+            const headLen = 8;
+            const leftA = moveAngle + Math.PI * 0.82;
+            const rightA = moveAngle - Math.PI * 0.82;
+
+            ctx.save();
+            if (isDimmed) ctx.globalAlpha = 0.72;
+            ctx.strokeStyle = '#ffd166';
+            ctx.fillStyle = '#ffd166';
+            ctx.lineWidth = 2 / camera.zoom;
+            ctx.beginPath();
+            ctx.moveTo(obj.x, obj.y);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(endX, endY);
+            ctx.lineTo(endX + Math.cos(leftA) * headLen, endY + Math.sin(leftA) * headLen);
+            ctx.lineTo(endX + Math.cos(rightA) * headLen, endY + Math.sin(rightA) * headLen);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+    };
+
+    const drawOverlayLayerImage = (layer) => {
+        if (!isOverlayLayer(layer) || layer.hidden) return;
+        const overlay = layer.overlay;
+        if (!overlay || !overlay.src) return;
+
+        const img = getOverlayImageForLayer(layer);
+        const overlayScale = Math.max(OVERLAY_MIN_SCALE, Number(overlay.scale) || 1);
+        const overlayRotation = Number(overlay.rotation) || 0;
+        const baseW = (img && img.naturalWidth) ? img.naturalWidth : 300;
+        const baseH = (img && img.naturalHeight) ? img.naturalHeight : 200;
+        const drawW = baseW * overlayScale;
+        const drawH = baseH * overlayScale;
+        const isActiveOverlay = layer.id === layerState.activeId;
+        const isPickerHoveredOverlay = isColorPicking && hoveredOverlayLayerId === layer.id;
+
+        ctx.save();
+        ctx.translate(overlay.x || 0, overlay.y || 0);
+        ctx.rotate(overlayRotation * Math.PI / 180);
+        ctx.globalAlpha = isPickerHoveredOverlay ? 1 : OVERLAY_ALPHA;
+        if (img && img.complete && img.naturalWidth > 0) {
+            ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+        } else {
+            ctx.fillStyle = '#73d2ff';
+            ctx.fillRect(-drawW / 2, -drawH / 2, drawW, drawH);
+            ctx.strokeStyle = '#1e6b8f';
+            ctx.lineWidth = 2 / camera.zoom;
+            ctx.strokeRect(-drawW / 2, -drawH / 2, drawW, drawH);
+        }
+        ctx.restore();
+
+        if (isActiveOverlay) {
+            ctx.save();
+            ctx.translate(overlay.x || 0, overlay.y || 0);
+            ctx.rotate(overlayRotation * Math.PI / 180);
+            ctx.strokeStyle = '#73d2ff';
+            ctx.lineWidth = 2 / camera.zoom;
+            ctx.setLineDash([8 / camera.zoom, 6 / camera.zoom]);
+            ctx.strokeRect(-drawW / 2, -drawH / 2, drawW, drawH);
+            ctx.setLineDash([]);
             ctx.restore();
 
-            if (objectHasMovementEnabled(obj)) {
-                const moveAngle = Number(obj.mA) || 0;
-                const moveSpeed = Math.abs(Number(obj.mS) || 0);
-                const arrowLen = 26 + Math.min(42, moveSpeed * 3.5);
-                const endX = obj.x + Math.cos(moveAngle) * arrowLen;
-                const endY = obj.y + Math.sin(moveAngle) * arrowLen;
-                const headLen = 8;
-                const leftA = moveAngle + Math.PI * 0.82;
-                const rightA = moveAngle - Math.PI * 0.82;
-
-                ctx.save();
-                if (isDimmed) ctx.globalAlpha = 0.72;
-                ctx.strokeStyle = '#ffd166';
-                ctx.fillStyle = '#ffd166';
-                ctx.lineWidth = 2 / camera.zoom;
-                ctx.beginPath();
-                ctx.moveTo(obj.x, obj.y);
-                ctx.lineTo(endX, endY);
-                ctx.stroke();
-
-                ctx.beginPath();
-                ctx.moveTo(endX, endY);
-                ctx.lineTo(endX + Math.cos(leftA) * headLen, endY + Math.sin(leftA) * headLen);
-                ctx.lineTo(endX + Math.cos(rightA) * headLen, endY + Math.sin(rightA) * headLen);
-                ctx.closePath();
-                ctx.fill();
-                ctx.restore();
-            }
+            ctx.save();
+            ctx.fillStyle = 'rgba(115, 210, 255, 0.9)';
+            ctx.font = `${12 / camera.zoom}px Arial, sans-serif`;
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('Overlay: drag to move, Alt+wheel to scale, Ctrl+wheel to rotate', (overlay.x || 0) - drawW / 2, (overlay.y || 0) - drawH / 2 - (8 / camera.zoom));
+            ctx.restore();
         }
-    });
+    };
+
+    for (let i = layerState.items.length - 1; i >= 0; i--) {
+        const layer = layerState.items[i];
+        if (layer.hidden) continue;
+        drawOverlayLayerImage(layer);
+        const layerObjects = objectsByLayer.get(layer.id) || [];
+        layerObjects.forEach(obj => drawObjectSprite(obj));
+    }
+
+    for (const obj of sortedObjects) {
+        if (!getLayerById(obj.layerId)) {
+            drawObjectSprite(obj);
+        }
+    }
 
     // Draw Preview Overlay (Ghosts)
     if (isMouseOnCanvas && currentTool !== 'none' && objectConfigs[currentTool]) {
@@ -3815,6 +4429,28 @@ function draw() {
     ctx.restore();
 
     ctx.restore(); // Restore Camera
+
+    if (isColorPicking && isMouseOnCanvas) {
+        const topTarget = getTopPickTargetAtPoint(previewX, previewY);
+        hoveredOverlayLayerId = (topTarget && topTarget.kind === 'overlay') ? topTarget.layer.id : null;
+        const liveSample = resolvePickColorAtPoint(previewX, previewY, mouseCanvasPos.x, mouseCanvasPos.y);
+        if (liveSample) sampledPickColor = liveSample;
+
+        ctx.save();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(mouseCanvasPos.x, mouseCanvasPos.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+
+        const swatchColor = sampledPickColor || levelConfig.lastUsedColor;
+        ctx.fillStyle = swatchColor;
+        ctx.fillRect(mouseCanvasPos.x + 12, mouseCanvasPos.y + 12, 22, 22);
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(mouseCanvasPos.x + 12, mouseCanvasPos.y + 12, 22, 22);
+        ctx.restore();
+    }
     } catch (e) {
         console.error("DRAW ERROR:", e);
         if (!window.hasAlertedDraw) { alert("Draw Error: " + e.message); window.hasAlertedDraw = true; }
@@ -4112,6 +4748,7 @@ function updatePropertiesPanel() {
 
     if (!isPlacingColor && !isSelectingColorItem && !hasAnyProps) {
         propPanel.classList.add('closed');
+        if (isColorPicking) setColorPickerActive(false);
         propFieldsContainer.innerHTML = '';
         if (movementFieldsContainer) movementFieldsContainer.innerHTML = '';
         if (movementDetailsEl) movementDetailsEl.style.display = 'none';
@@ -4142,25 +4779,17 @@ function updatePropertiesPanel() {
 propColorInput.addEventListener('input', (e) => {
     runUndoableAction(() => {
         const val = e.target.value;
-        levelConfig.lastUsedColor = val;
-        let changed = false;
-        
-        if (selectedObjects.length > 0) {
-            selectedObjects.forEach(obj => {
-                if (objectConfigs[obj.type] && objectConfigs[obj.type].colorable) {
-                    obj.color = val;
-                    changed = true;
-                }
-            });
-        } else if (currentTool !== 'none' && objectConfigs[currentTool] && objectConfigs[currentTool].colorable) {
-            changed = true;
-        }
-        
-        if (changed) {
-            draw();
-        }
+        applyColorToCurrentContext(val);
+        draw();
     });
 });
+
+if (propColorPickerBtn) {
+    propColorPickerBtn.addEventListener('click', () => {
+        if (propPanel.classList.contains('closed') || propColorRow.style.display === 'none') return;
+        setColorPickerActive(!isColorPicking);
+    });
+}
 
 function handlePropertyInputChange(target) {
     const key = target.dataset ? target.dataset.propKey : null;

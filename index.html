@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="icon" type="image/png" href="favicon.png">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TurboGoose Level Editor</title>
@@ -25,7 +26,12 @@
                 <div class="section-title">Properties</div>
                 <div class="left-section-body">
                     <div id="properties-panel" class="closed">
-                        <label id="prop-color-row">Block Color: <input type="color" id="prop-blockColor" value="#ffffff"></label>
+                        <label id="prop-color-row">Block Color:
+                            <span class="prop-color-controls">
+                                <input type="color" id="prop-blockColor" value="#ffffff">
+                                <button type="button" id="prop-color-picker-btn" title="Pick Color From Screen or Reference"><i class="fa-solid fa-eye-dropper" aria-hidden="true"></i></button>
+                            </span>
+                        </label>
                         <div id="properties-fields"></div>
                         <details id="movement-details">
                             <summary>Movement</summary>
@@ -67,6 +73,7 @@
                     <button class="tool-btn" data-tool="text" title="Text Shape"><i class="fa-solid fa-font" aria-hidden="true"></i></button>
                     <button class="tool-btn" data-tool="brush" title="Brush Selection (Ctrl+Scroll to resize)"><i class="fa-solid fa-paintbrush" aria-hidden="true"></i></button>
                     <button class="tool-btn" data-tool="grid" title="Alignment Grid (Left-Click obj to set, Right-Click to clear)"><i class="fa-solid fa-border-all" aria-hidden="true"></i></button>
+                    <button class="tool-btn" data-tool="imageOverlay" title="Image Overlay Layer"><i class="fa-regular fa-image" aria-hidden="true"></i></button>
                 </div>
             </div>
             <div class="sidebar-section">
@@ -119,6 +126,21 @@
             <label>Top Gradient Color: <input type="color" id="set-gradientTop" value="#009dff"></label>
             <label>Bottom Gradient Color: <input type="color" id="set-gradientBottom" value="#c2ccff"></label>
             <button id="close-settings-modal">Save</button>
+        </div>
+    </div>
+
+    <div id="image-overlay-modal" class="hidden">
+        <div class="modal-content image-overlay-content">
+            <h3>Create Image Overlay Layer</h3>
+            <p class="image-overlay-subtitle">Drag an image here, paste an image, or click to choose a file.</p>
+            <div id="image-overlay-dropzone" tabindex="0" role="button" aria-label="Upload image overlay">
+                <i class="fa-regular fa-image" aria-hidden="true"></i>
+                <span>Drop image, paste, or click to browse</span>
+            </div>
+            <input type="file" id="image-overlay-file-input" accept="image/*" hidden>
+            <div class="image-overlay-actions">
+                <button id="image-overlay-cancel-btn">Cancel</button>
+            </div>
         </div>
     </div>
 
