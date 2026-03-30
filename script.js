@@ -169,10 +169,67 @@ const OVERLAY_CONVERT_MAX_RES = 140;
 const OVERLAY_CONVERT_TARGET_TOOL = 'colorBlock';
 const OVERLAY_CONVERT_PROGRESS_CHUNK = 120;
 const FAST_COLORABLE_RENDER_THRESHOLD = 1200;
+const ADAPTIVE_FAST_COLORABLE_OBJECT_THRESHOLD = 700;
+const ADAPTIVE_FAST_COLORABLE_FRAME_BUDGET_MS = 18;
+const ADAPTIVE_FAST_COLORABLE_HOLD_MS = 220;
 const FAST_COLORABLE_TYPES = new Set(['colorBlock', 'colorTile']);
 const overlayImageCache = new Map();
 const overlayImageDataCache = new Map();
 let layerContextMenuLayerId = null;
+let adaptiveFastColorableUntil = 0;
+let sortedObjectsCache = [];
+let sortedObjectsSnapshotRefs = [];
+let sortedObjectsSnapshotZ = [];
+const objectsByLayerScratch = new Map();
+
+function getObjectZValue(obj) {
+    return Number.isFinite(obj?.z) ? obj.z : 0;
+}
+
+function getSortedObjectsForDraw() {
+    const len = objects.length;
+    let mustResort = len !== sortedObjectsSnapshotRefs.length;
+
+    if (!mustResort) {
+        for (let i = 0; i < len; i++) {
+            const obj = objects[i];
+            const z = getObjectZValue(obj);
+            if (sortedObjectsSnapshotRefs[i] !== obj || sortedObjectsSnapshotZ[i] !== z) {
+                mustResort = true;
+                break;
+            }
+        }
+    }
+
+    if (mustResort) {
+        sortedObjectsCache = [...objects].sort((a, b) => getObjectZValue(a) - getObjectZValue(b));
+        sortedObjectsSnapshotRefs = objects.slice();
+        sortedObjectsSnapshotZ = new Array(len);
+        for (let i = 0; i < len; i++) {
+            sortedObjectsSnapshotZ[i] = getObjectZValue(sortedObjectsSnapshotRefs[i]);
+        }
+    }
+
+    return sortedObjectsCache;
+}
+
+function buildObjectsByLayer(sortedObjects) {
+    objectsByLayerScratch.forEach(list => {
+        list.length = 0;
+    });
+
+    for (const obj of sortedObjects) {
+        let layerBucket = objectsByLayerScratch.get(obj.layerId);
+        if (!layerBucket) {
+            layerBucket = [];
+            objectsByLayerScratch.set(obj.layerId, layerBucket);
+        }
+        layerBucket.push(obj);
+    }
+
+    return objectsByLayerScratch;
+}
+
 const overlayConvertState = {
     isOpen: false,
     layerId: null,
@@ -1290,15 +1347,21 @@ const GOOSE_HEIGHT = 45;
 const _tintCanvas = document.createElement('canvas');
 const _tintCtx = _tintCanvas.getContext('2d');
 const tintedSpriteCache = new Map();
-const MAX_TINT_CACHE_ENTRIES = 800;
+const MAX_TINT_CACHE_ENTRIES = 2200;
 
 function getTintCacheKey(img, color, width, height) {
+    const normalizedColor = String(color || '#ffffff').trim().toLowerCase();
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
-    return `${img.src}|${color}|${w}x${h}`;
+    return `${img.src}|${normalizedColor}|${w}x${h}`;
 }
 
 function getTintedSprite(img, color, width, height) {
+    const normalizedColor = String(color || '#ffffff').trim().toLowerCase();
+    if (normalizedColor === '#fff' || normalizedColor === '#ffffff' || normalizedColor === 'white') {
+        return img;
+    }
+
     const cacheKey = getTintCacheKey(img, color, width, height);
     if (tintedSpriteCache.has(cacheKey)) {
         return tintedSpriteCache.get(cacheKey);
@@ -1314,7 +1377,7 @@ function getTintedSprite(img, color, width, height) {
     _tintCtx.drawImage(img, 0, 0, w, h);
 
     _tintCtx.globalCompositeOperation = 'multiply';
-    _tintCtx.fillStyle = color;
+    _tintCtx.fillStyle = normalizedColor;
     _tintCtx.fillRect(0, 0, w, h);
 
     _tintCtx.globalCompositeOperation = 'destination-in';
@@ -4399,6 +4462,7 @@ function getObjectIndexAt(x, y) {
 // Drawing
 function draw() {
     try {
+        const drawStartMs = performance.now();
         updateObjectCountDisplay();
         ctx.imageSmoothingEnabled = false;
         ctx.clearRect(0, 0, width, height);
@@ -4415,7 +4479,9 @@ function draw() {
     const viewMinY = (-camera.y / camera.zoom) - viewPad;
     const viewMaxY = ((-camera.y + height) / camera.zoom) + viewPad;
     const selectedSet = new Set(selectedObjects);
-    const useFastColorableRender = objects.length >= FAST_COLORABLE_RENDER_THRESHOLD;
+    const nowMs = performance.now();
+    const useAdaptiveFastColorable = objects.length >= ADAPTIVE_FAST_COLORABLE_OBJECT_THRESHOLD && nowMs < adaptiveFastColorableUntil;
+    const useFastColorableRender = objects.length >= FAST_COLORABLE_RENDER_THRESHOLD || useAdaptiveFastColorable;
 
     const isObjectLikelyVisible = (obj, dims, visualScale) => {
         const halfW = (dims.w * visualScale) / 2;
@@ -4425,17 +4491,8 @@ function draw() {
     };
 
     // Draw objects and overlays by layer order (bottom to top).
-    const sortedObjects = [...objects].sort((a, b) => {
-        const za = Number.isFinite(a.z) ? a.z : 0;
-        const zb = Number.isFinite(b.z) ? b.z : 0;
-        return za - zb;
-    });
-
-    const objectsByLayer = new Map();
-    for (const obj of sortedObjects) {
-        if (!objectsByLayer.has(obj.layerId)) objectsByLayer.set(obj.layerId, []);
-        objectsByLayer.get(obj.layerId).push(obj);
-    }
+    const sortedObjects = getSortedObjectsForDraw();
+    const objectsByLayer = buildObjectsByLayer(sortedObjects);
 
     const drawObjectSprite = (obj) => {
         if (isLayerHiddenForObject(obj)) return;
@@ -4973,6 +5030,13 @@ function draw() {
         ctx.lineWidth = 1;
         ctx.strokeRect(mouseCanvasPos.x + 12, mouseCanvasPos.y + 12, 22, 22);
         ctx.restore();
+    }
+
+    if (objects.length >= ADAPTIVE_FAST_COLORABLE_OBJECT_THRESHOLD) {
+        const drawDurationMs = performance.now() - drawStartMs;
+        if (drawDurationMs > ADAPTIVE_FAST_COLORABLE_FRAME_BUDGET_MS) {
+            adaptiveFastColorableUntil = performance.now() + ADAPTIVE_FAST_COLORABLE_HOLD_MS;
+        }
     }
     } catch (e) {
         console.error("DRAW ERROR:", e);
